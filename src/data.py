@@ -126,3 +126,143 @@ def get_batch(data, batch_size: int, ctx_len: int, device: str, generator=None):
     x = torch.from_numpy(x).to(device)
     y = torch.from_numpy(y).to(device)
     return x, y
+
+
+# ---------------------------------------------------------------------------
+# 视觉部分：合成图文数据 + 图像工具
+# ---------------------------------------------------------------------------
+COLORS = {"红色": (220, 40, 40), "绿色": (40, 200, 80), "蓝色": (50, 90, 230), "黄色": (240, 210, 50)}
+SHAPES = ["圆形", "方形", "三角形"]
+ZONES = {"左": 0.22, "中": 0.5, "右": 0.78}
+_N_CN = {1: "一", 2: "两", 3: "三"}
+
+_MEAN = 0.5
+_STD = 0.5
+
+
+def image_to_tensor(img):
+    """PIL 图 -> (3,H,W) float32，归一化到 [-1,1]。用 numpy 实现，避免额外依赖。"""
+    import numpy as np
+    import torch
+
+    arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+    arr = (arr - _MEAN) / _STD
+    return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+
+
+def _draw_sample(rng, size: int):
+    """随机画 1~3 个彩色图形，并同时生成中文描述与问答（图与文本同源）。"""
+    import random
+    from PIL import Image, ImageDraw
+
+    n = rng.randint(1, 3)
+    # 三个槽位（左/中/右）随机选 n 个，保证位置不重叠
+    zones = rng.sample(list(ZONES.keys()), n)
+    zones.sort(key=lambda z: ZONES[z])
+    objects = []
+    for z in zones:
+        shape = rng.choice(SHAPES)
+        color = rng.choice(list(COLORS.keys()))
+        objects.append((shape, color, z))
+
+    img = Image.new("RGB", (size, size), (245, 245, 245))
+    draw = ImageDraw.Draw(img)
+    r = size // 9
+    for shape, color, z in objects:
+        cx = int(ZONES[z] * size)
+        cy = size // 2 + rng.randint(-size // 10, size // 10)
+        rgb = COLORS[color]
+        if shape == "圆形":
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=rgb)
+        elif shape == "方形":
+            draw.rectangle([cx - r, cy - r, cx + r, cy + r], fill=rgb)
+        else:
+            draw.polygon([(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)], fill=rgb)
+
+    desc = "，".join(f"一个{color}的{shape}在{z}边" for shape, color, z in objects)
+    caption = f"图中有{_N_CN[n]}个图形：{desc}。"
+
+    qa = [("图中有几个图形？", f"{_N_CN[n]}个")]
+    for shape, color, z in objects:
+        qa.append((f"{z}边是什么图形？", f"{color}的{shape}"))
+        qa.append((f"图中有{color}的{shape}吗？", "有"))
+    # 加一个否定样本
+    absent = rng.choice(SHAPES)
+    if absent not in [o[0] for o in objects]:
+        qa.append((f"图中有{absent}吗？", "没有"))
+    return img, caption, qa
+
+
+class SyntheticImageDataset(Dataset):
+    """程序生成的几何图文数据：image + 中文描述 + 简单 VQA。"""
+
+    def __init__(self, num_samples: int, img_size: int = 128, seed: int = 0):
+        self.num_samples = num_samples
+        self.img_size = img_size
+        self.seed = seed
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, i: int):
+        import random
+        rng = random.Random(self.seed * 1000003 + i)
+        img, caption, qa = _draw_sample(rng, self.img_size)
+        return {"image": image_to_tensor(img), "caption": caption, "qa": qa}
+
+
+def build_caption_example(tokenizer, caption: str, num_image_tokens: int):
+    """构造"图片 -> 描述"样本：<bos> <image>*N <描述> <eos>，仅文本部分计入损失。"""
+    bos = tokenizer.special_id("bos")
+    eos = tokenizer.special_id("eos")
+    img = tokenizer.special_id("image")
+    text_ids = tokenizer.encode(caption)
+    input_ids = [bos] + [img] * num_image_tokens + text_ids + [eos]
+    labels = [-100] * (1 + num_image_tokens) + text_ids + [eos]
+    return input_ids, labels
+
+
+def build_vqa_example(tokenizer, question: str, answer: str, num_image_tokens: int):
+    """构造 VQA 样本：<bos> <image>*N 问题 答：<答案> <eos>。"""
+    bos = tokenizer.special_id("bos")
+    eos = tokenizer.special_id("eos")
+    img = tokenizer.special_id("image")
+    prompt_ids = [bos] + [img] * num_image_tokens + tokenizer.encode(question + "答：")
+    answer_ids = tokenizer.encode(answer) + [eos]
+    input_ids = prompt_ids + answer_ids
+    labels = [-100] * len(prompt_ids) + answer_ids
+    return input_ids, labels
+
+
+def collate_vlm(batch: list[dict], tokenizer, num_image_tokens: int):
+    """把一批样本整理成训练张量：图像 token 用 <image> 占位符，按 batch 内最大长度补齐。
+
+    教学注释：batch 内各样本文本长度不同，需 padding 到同长；label 的 pad 位为 -100，
+    由于是因果注意力，末尾的 pad 不会影响前面的预测。
+    """
+    import torch
+
+    all_ids, all_labels, pix = [], [], []
+    for item in batch:
+        if "qa" in item and item.get("use_qa"):
+            q, a = item["qa"][0]
+            ids, labels = build_vqa_example(tokenizer, q, a, num_image_tokens)
+        else:
+            ids, labels = build_caption_example(tokenizer, item["caption"], num_image_tokens)
+        all_ids.append(ids)
+        all_labels.append(labels)
+        pix.append(item["image"])
+
+    pad_id = tokenizer.special_id("pad")
+    max_len = max(len(x) for x in all_ids)
+    input_ids, labels = [], []
+    for ids, lab in zip(all_ids, all_labels):
+        n_pad = max_len - len(ids)
+        input_ids.append(ids + [pad_id] * n_pad)
+        labels.append(lab + [-100] * n_pad)
+
+    return {
+        "input_ids": torch.tensor(input_ids, dtype=torch.long),
+        "labels": torch.tensor(labels, dtype=torch.long),
+        "pixel_values": torch.stack(pix, dim=0),
+    }
