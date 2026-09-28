@@ -266,3 +266,77 @@ def collate_vlm(batch: list[dict], tokenizer, num_image_tokens: int):
         "labels": torch.tensor(labels, dtype=torch.long),
         "pixel_values": torch.stack(pix, dim=0),
     }
+
+
+# ---------------------------------------------------------------------------
+# 真实中文儿童图文数据：下载、建索引、读取
+# ---------------------------------------------------------------------------
+def download_children_captions(dest_dir: str) -> str:
+    """下载中文儿童图文数据集（png + 同名 txt 描述）到项目内目录。
+
+    教学注释：repo 是 dataset 类型，必须显式指定 repo_type，
+    否则会在 model 命名空间 404；只拉 png/txt，避免下载无关文件。
+    """
+    from huggingface_hub import snapshot_download
+    Path(dest_dir).mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id="svjack/Chinese_Children_Image_Captioning_Dataset_Split0",
+        repo_type="dataset",
+        local_dir=dest_dir,
+        allow_patterns=["*.png", "*.txt"],
+    )
+    return dest_dir
+
+
+def build_caption_index(raw_dir: str, out_jsonl: str, max_items: int | None = None) -> int:
+    """扫描 png，配对同名 txt，写出 {image, caption} 的 jsonl 索引。
+
+    教学注释：索引只存相对路径（正斜杠，跨平台一致），
+    图片文件可能在磁盘上移动，读取时再由 Dataset 拼接绝对路径。
+    max_items 用于大仓库时截断，保证建索引过程可控。
+    """
+    root = Path(raw_dir)
+    Path(out_jsonl).parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with open(out_jsonl, "w", encoding="utf-8") as f:
+        for png in sorted(root.rglob("*.png")):
+            txt = png.with_suffix(".txt")
+            if not txt.exists():
+                continue
+            caption = txt.read_text(encoding="utf-8", errors="ignore").strip()
+            if not caption:
+                continue
+            f.write(json.dumps({"image": str(png.relative_to(root)).replace("\\", "/"),
+                                "caption": caption}, ensure_ascii=False) + "\n")
+            count += 1
+            if max_items is not None and count >= max_items:
+                break
+    return count
+
+
+class CaptionDataset(Dataset):
+    """真实图文数据集：按索引读取图片与中文描述。
+
+    教学注释：__getitem__ 里按需打开并缩放图片，避免一次性把所有图读进内存。
+    """
+
+    def __init__(self, index_jsonl: str, img_size: int = 128, raw_dir: str | None = None):
+        self.items = [json.loads(l) for l in Path(index_jsonl).read_text(encoding="utf-8").splitlines() if l.strip()]
+        self.img_size = img_size
+        # index 位于 data/processed/image/children/index.jsonl，
+        # parents[3] 即 data/ 目录；找不到时回退到约定路径
+        if raw_dir:
+            self.raw_dir = Path(raw_dir)
+        else:
+            self.raw_dir = Path(index_jsonl).resolve().parents[3] / "raw" / "image" / "children_caption"
+        # 教学注释：过滤掉图片已被删除的索引项，保证 len 与实际可读取数量一致。
+        self.items = [it for it in self.items if (self.raw_dir / it["image"]).exists()]
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, i: int):
+        from PIL import Image
+        it = self.items[i]
+        img = Image.open(self.raw_dir / it["image"]).convert("RGB").resize((self.img_size, self.img_size))
+        return {"image": image_to_tensor(img), "caption": it["caption"]}
