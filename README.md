@@ -161,9 +161,9 @@ P:\Demo\LLM\
 | M3 模型 | RoPE / Attention / Block / GPT | `src/attention.py`、`src/model.py` | ✅ |
 | M4 训练 | Trainer、配置、续训、loss 曲线 | `scripts/train_gpt.py`、`out/gpt/*` | ✅ |
 | M5 生成 | KV-cache 采样、CLI 聊天 | `src/generate.py`、`scripts/chat.py` | ✅ |
-| M6 视觉 | 手写 ViT + 投影层 | `src/vision.py` | ⏳ 计划 |
-| M7 多模态训练 | 合成图文 → 真实图文 → 简单 VQA | `scripts/train_vlm.py` | ⏳ 计划 |
-| M8 交互与文档 | Gradio 网页 + 原理文档 | `scripts/webapp.py`、`docs/04-vlm.md` | ⏳ 计划 |
+| M6 视觉 | 手写 ViT + 投影层 | `src/vision.py`、`src/vlm.py` | ✅ |
+| M7 多模态训练 | 合成图文 → 真实图文 → 简单 VQA | `scripts/train_vlm.py` | ✅ |
+| M8 交互与文档 | Gradio 网页 + 原理文档 | `scripts/webapp.py`、`docs/04-vlm.md` | ✅ |
 
 ## 9. 运行测试
 
@@ -173,7 +173,8 @@ P:\Demo\LLM\
 
 测试覆盖：配置加载/覆盖、分词往返（`decode(encode(x)) == x`）、因果 mask 正确性、
 GQA 与 KV 缓存形状、模型前向与权重共享、小批过拟合（证明模型能学）、训练器续训、
-编译失败回退 eager。
+编译失败回退 eager、合成图文数据与 collate、ViT 形状与双向注意力、VLM 特征替换与权重迁移、
+图文/问答推理。
 
 ## 10. 常见问题（FAQ）
 
@@ -226,3 +227,29 @@ Qwen 词表有 151666 个 token，超过 `uint16` 上限 65535，必须用 4 字
 > 说明：`train_tokenizer.py` 默认目标词表 16384；若语料子集较小，`min_frequency=2`
 > 会在高频对被合并完时提前停止，实际词表可能小于目标（`train_gpt.py` 会用分词器
 > 真实 `vocab_size` 覆盖配置）。细节见 [docs/01-tokenizer.md](docs/01-tokenizer.md)。
+
+## 11. 视觉版（VLM）使用
+
+原理见 [docs/04-vlm.md](docs/04-vlm.md)：手写 ViT 把图片编码成 64 个 patch 向量，
+经投影层对齐后用视觉特征替换 `<image>` 占位符的 embedding（LLaVA 式），
+LLM 权重从文本阶段的 checkpoint 迁移（"先教说话，再装眼睛"）。
+
+```powershell
+# 1) 合成几何图文上快速训练（分钟级，先验证链路；会自动复用 out/gpt/latest.pt 的 LLM 权重）
+& ".venv\Scripts\python.exe" scripts/train_vlm.py --set train.max_steps=600 train.batch_size=4
+
+# 2) 训练 VQA 版本（问题 -> 答案）
+& ".venv\Scripts\python.exe" scripts/train_vlm.py --use_qa `
+  --set train.out_dir=out/vlm_vqa train.max_steps=600 train.batch_size=4
+
+# 3) 真实中文儿童图文（需先成功下载数据）
+& ".venv\Scripts\python.exe" scripts/prepare_image_data.py --max_items 3000
+& ".venv\Scripts\python.exe" scripts/train_vlm.py --data_kind children
+
+# 4) 网页交互：文本聊天 + 图片描述/VQA
+& ".venv\Scripts\python.exe" scripts/webapp.py
+```
+
+> VLM 默认配置 `configs/vlm_children.yaml`：`img_size=128`、`patch_size=16` → 每个样本
+> 64 个 `<image>` token；`d_vision=384, depth=6`；`data_kind: synthetic`。
+> 生成效果差时，优先检查标签是否相对输入**右移一位**（见 docs/04-vlm.md 第 5 节）。
