@@ -251,10 +251,14 @@ def collate_vlm(batch: list[dict], tokenizer, num_image_tokens: int):
     """
     import torch
 
+    import random
+
     all_ids, all_labels, pix = [], [], []
     for item in batch:
         if "qa" in item and item.get("use_qa"):
-            q, a = item["qa"][0]
+            # 教学注释：qa[0] 恒为"数图形"问题，若只取它则形状/颜色/位置/
+            # 否定等题型永远学不到；随机抽一题使各种问题类型都被覆盖。
+            q, a = item["qa"][random.randrange(len(item["qa"]))]
             ids, labels = build_vqa_example(tokenizer, q, a, num_image_tokens)
         else:
             ids, labels = build_caption_example(tokenizer, item["caption"], num_image_tokens)

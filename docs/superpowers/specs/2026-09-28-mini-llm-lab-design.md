@@ -104,7 +104,7 @@ P:\Demo\LLM\
 ## 4. 组件设计
 
 ### 4.1 配置系统 `src/config.py`
-- YAML 文件 + dataclass（`ModelConfig` / `TrainConfig` / `DataConfig` / `VLMConfig`）。
+- YAML 文件 + dataclass（`ModelConfig` / `TrainConfig` / `DataConfig`）；VLM 配置段直接以原始 dict 传入。
 - 支持命令行覆盖（如 `--train.lr 3e-4 --model.n_layer 10`）。
 - 配置随 checkpoint 一起保存，续训时校验结构一致性。
 
@@ -154,7 +154,7 @@ P:\Demo\LLM\
 
 ### 4.5 视觉编码 `src/vision.py`
 - 手写 ViT：`Conv2d(patch_size, stride=patch_size)` 做 patch embedding → 展平 → 可学习位置编码
-  → N×Block（复用 4.4 的 Block，双向注意力，无因果 mask）→ LayerNorm。
+  → N×ViTBlock（LayerNorm + GELU，双向注意力，无因果 mask；内部复用 4.4 的 `MultiHeadAttention`）→ LayerNorm。
 - 默认 `img_size=128, patch_size=16 → 64 patches, d_vision=384, depth=6, heads=6`，约 19M。
 
 ### 4.6 多模态融合 `src/vlm.py`

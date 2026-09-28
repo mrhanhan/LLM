@@ -205,8 +205,13 @@ class VLMTrainer(Trainer):
         return b
 
     def _forward_loss(self, batch):
-        """基类以单个 batch 对象调用；这里 batch 是 collate 后的字典。"""
-        _, loss, _ = self.model(batch["input_ids"].to(self.device),
-                                batch["pixel_values"].to(self.device),
-                                batch["labels"].to(self.device))
+        """基类以单个 batch 对象调用；这里 batch 是 collate 后的字典。
+
+        教学注释：VLM 前向同样必须包在 bf16 autocast 里，否则 dtype=bf16 时
+        VLM 仍会以 fp32 前向（主权重保持 fp32 不变），与基类行为不一致。
+        """
+        with _autocast_ctx(self.cfg, self.device):
+            _, loss, _ = self.model(batch["input_ids"].to(self.device),
+                                    batch["pixel_values"].to(self.device),
+                                    batch["labels"].to(self.device))
         return loss

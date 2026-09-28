@@ -44,6 +44,7 @@ class MiniVLM(nn.Module):
         vis = self.projector(self.vision(pixel_values))          # (B, N, d_model)
         mask = input_ids == self.image_token_id                  # (B, T)
         # 每行恰有 N 个 True，按行优先展开后与 vis.reshape(-1, d) 一一对应
+        assert mask.sum(1).eq(vis.size(1)).all(), "图像 token 数量与 patch 数不一致"
         embeds = embeds.clone()
         embeds[mask] = vis.reshape(-1, vis.size(-1)).to(embeds.dtype)
         return embeds

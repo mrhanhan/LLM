@@ -9,7 +9,7 @@ vlm:
   img_size: 128
   patch_size: 16
 model:
-  vocab_size: 151937          # 会被 tokenizer 实际词表覆盖
+  vocab_size: 151666          # Qwen2.5-0.5B + <image>；运行时仍会被实际词表覆盖
   d_model: 768
   n_layer: 12
   n_head: 12
