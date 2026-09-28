@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import math
 import time
 from pathlib import Path
 
@@ -35,8 +34,15 @@ class Trainer:
 
         if train_cfg.compile:
             # 教学注释：torch.compile 在 Windows 上需要 triton，可能失败；失败自动回退。
+            # 注意 torch.compile 是"惰性编译"：真正编译发生在第一次前向，所以这里先拿一个
+            # 极小 dummy batch 做一次 warmup 前向，把编译错误提前暴露，才能被 try 捕获并回退。
             try:
-                self.model = torch.compile(model)
+                compiled = torch.compile(model)
+                with torch.no_grad():
+                    n = min(4, model.cfg.ctx_len)
+                    dummy = torch.randint(0, 2, (1, n), device=self.device)
+                    compiled(dummy, targets=dummy)
+                self.model = compiled
                 print("[compile] torch.compile 已启用")
             except Exception as e:  # noqa: BLE001
                 print(f"[compile] 失败，回退 eager：{e}")
@@ -73,6 +79,9 @@ class Trainer:
     def train(self):
         cfg = self.cfg
         self.model.train()
+        # 教学注释：先同步 _current_step，保证 max_steps<=start_step（已训完）时
+        # 循环不执行、末尾 save() 也能记录正确的步数，而不是退回 0。
+        self._current_step = self.start_step
         t0 = time.time()
         for step in range(self.start_step, cfg.max_steps):
             self._current_step = step + 1
@@ -109,7 +118,6 @@ class Trainer:
         print(f"训练完成，总耗时 {time.time() - t0:.1f}s，参数量 {human_params(self.raw_model.num_params())}")
 
     def save(self, path: str):
-        from src.config import save_config
         ckpt = {
             "model": self.raw_model.state_dict(),
             "optimizer": self.opt.state_dict(),
@@ -128,4 +136,7 @@ class Trainer:
             except Exception as e:  # noqa: BLE001
                 print(f"优化器状态恢复失败（可忽略）：{e}")
             self.start_step = int(ckpt.get("step", 0))
+        # 教学注释：把已训练步数同步到 _current_step，避免未进入 train() 循环的
+        # save() 把 checkpoint 步数写回 0（否则续训会从头开始）。
+        self._current_step = self.start_step
         return self.start_step
