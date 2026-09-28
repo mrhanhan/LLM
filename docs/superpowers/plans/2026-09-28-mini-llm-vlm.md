@@ -784,7 +784,7 @@ class VLMTrainer(Trainer):
         losses = []
         for _ in range(max(1, min(5, self.cfg.eval_iters))):
             b = self._next_batch()
-            with _autocast_ctx(self.cfg):
+            with _autocast_ctx(self.cfg, self.device):
                 _, loss, _ = self.model(b["input_ids"].to(self.device),
                                         b["pixel_values"].to(self.device),
                                         b["labels"].to(self.device))
