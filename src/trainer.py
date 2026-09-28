@@ -148,3 +148,64 @@ class Trainer:
         # save() 把 checkpoint 步数写回 0（否则续训会从头开始）。
         self._current_step = self.start_step
         return self.start_step
+
+
+class VLMTrainer(Trainer):
+    """多模态训练器：批数据由 collate_vlm 生成，loss 在图像位置上被屏蔽。
+
+    教学注释：它复用 Trainer 的优化/日志/续训逻辑，只覆写"如何取一批数据"
+    和"如何算 loss"这两个接缝，这就是把训练循环和数据形态解耦的好处。
+    """
+
+    def __init__(self, model, train_cfg, dataset, tokenizer, num_image_tokens,
+                 device: str | None = None, use_qa: bool = False):
+        from torch.utils.data import DataLoader
+
+        self.tokenizer = tokenizer
+        self.num_image_tokens = num_image_tokens
+        self.use_qa = use_qa
+        self.loader = DataLoader(
+            dataset, batch_size=train_cfg.batch_size, shuffle=True, drop_last=True,
+            collate_fn=self._collate, num_workers=0,
+        )
+        self._iter = None
+        super().__init__(model, train_cfg, None, None, tokenizer=tokenizer, device=device)
+
+    def _collate(self, batch):
+        from src.data import collate_vlm
+        for b in batch:
+            b["use_qa"] = self.use_qa
+        return collate_vlm(batch, self.tokenizer, self.num_image_tokens)
+
+    @torch.no_grad()
+    def _estimate_val(self) -> float:
+        # 简化：用训练分布上的若干 batch 估计，避免额外验证集管线
+        self.model.eval()
+        losses = []
+        for _ in range(max(1, min(5, self.cfg.eval_iters))):
+            b = self._next_batch()
+            with _autocast_ctx(self.cfg, self.device):
+                _, loss, _ = self.model(b["input_ids"].to(self.device),
+                                        b["pixel_values"].to(self.device),
+                                        b["labels"].to(self.device))
+            losses.append(loss.item())
+        self.model.train()
+        return sum(losses) / len(losses)
+
+    def _next_batch(self):
+        """从 DataLoader 取一批（自动循环 epoch）。"""
+        if self._iter is None:
+            self._iter = iter(self.loader)
+        try:
+            b = next(self._iter)
+        except StopIteration:
+            self._iter = iter(self.loader)
+            b = next(self._iter)
+        return b
+
+    def _forward_loss(self, b, _unused=None):
+        """基类以 (x, y) 调用；这里第一个参数即为 collate 后的 batch 字典。"""
+        _, loss, _ = self.model(b["input_ids"].to(self.device),
+                                b["pixel_values"].to(self.device),
+                                b["labels"].to(self.device))
+        return loss
