@@ -69,7 +69,14 @@ def plot_loss(jsonl_path: str, out_png: str) -> None:
 
     steps, losses, val_steps, val_losses = [], [], [], []
     for line in Path(jsonl_path).read_text(encoding="utf-8").splitlines():
-        rec = json.loads(line)
+        # 教学注释：训练中途崩溃会留下半行 JSON，画曲线时应跳过坏行而不是让 train() 抛异常。
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
         if "loss" in rec and rec.get("split") == "train":
             steps.append(rec["step"])
             losses.append(rec["loss"])

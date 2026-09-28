@@ -88,3 +88,43 @@ def test_compile_true_falls_back_to_eager(tmp_path, monkeypatch):
     assert trainer.model is trainer.raw_model, "编译失败应回退到 eager 原始模型"
     trainer.train()
     assert os.path.exists(str(tmp_path / "out" / "latest.pt"))
+
+
+def test_trainer_supports_model_without_cfg(tmp_path):
+    # 回归：Trainer 的 checkpoint / 取 batch 逻辑不应依赖 model.cfg。
+    # MiniVLM 没有 .cfg 属性，需通过显式 ctx_len 正常运行并保存。
+    class _NoCfgModel(torch.nn.Module):
+        def __init__(self, vocab_size=100, ctx_len=16):
+            super().__init__()
+            self.ctx_len = ctx_len  # 故意不叫 cfg，模拟 MiniVLM
+            self.emb = torch.nn.Embedding(vocab_size, 16)
+            self.head = torch.nn.Linear(16, vocab_size)
+
+        def forward(self, idx, targets=None):
+            logits = self.head(self.emb(idx))
+            loss = None
+            if targets is not None:
+                loss = torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+            return logits, loss, None
+
+        def num_params(self):
+            return sum(p.numel() for p in self.parameters())
+
+        def configure_optimizers(self, train_cfg):
+            return torch.optim.AdamW(self.parameters(), lr=train_cfg.lr)
+
+    data = make_data(tmp_path)
+    tcfg = tiny_tcfg(tmp_path / "nocfg", max_steps=2, save_interval=2,
+                     eval_interval=2)
+    model = _NoCfgModel()
+    assert not hasattr(model, "cfg")
+    trainer = Trainer(model, tcfg, data, data, ctx_len=16)
+    assert trainer.ctx_len == 16
+    trainer.train()
+
+    ckpt_path = str(tmp_path / "nocfg" / "latest.pt")
+    assert os.path.exists(ckpt_path)
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    assert ckpt["cfg"] is None, "无 cfg 模型的 checkpoint 应把 cfg 记为 None"
+

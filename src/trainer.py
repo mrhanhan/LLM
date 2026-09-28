@@ -12,22 +12,30 @@ from src.config import TrainConfig
 from src.utils import JsonlLogger, get_lr, gpu_mem_str, human_params, plot_loss
 
 
-def _autocast_ctx(train_cfg: TrainConfig):
-    """bf16 训练不需要 GradScaler，直接 autocast 即可。"""
-    if train_cfg.dtype == "bf16" and torch.cuda.is_available():
+def _autocast_ctx(train_cfg: TrainConfig, device: str):
+    """bf16 训练不需要 GradScaler，直接 autocast 即可。
+
+    教学注释：是否启用 autocast 必须看"实际选用的设备"，而不是机器上是否装了 CUDA。
+    否则在 CUDA 主机上强制 device="cpu" 时，会对 CPU 张量请求 autocast("cuda") 而报错。
+    """
+    if train_cfg.dtype == "bf16" and str(device).startswith("cuda"):
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     return contextlib.nullcontext()
 
 
 class Trainer:
     def __init__(self, model: nn.Module, train_cfg: TrainConfig, train_data, val_data,
-                 tokenizer=None, device: str | None = None):
+                 tokenizer=None, device: str | None = None, ctx_len: int | None = None):
         self.cfg = train_cfg
         self.model = model
         self.train_data = train_data
         self.val_data = val_data
         self.tokenizer = tokenizer
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # 教学注释：上下文长度不强制依赖 model.cfg（如 MiniVLM 没有 .cfg）。
+        # 优先用显式入参，其次回退到 model.cfg.ctx_len，都没有则为 None。
+        self.ctx_len = ctx_len if ctx_len is not None else getattr(
+            getattr(model, "cfg", None), "ctx_len", None)
         self.model.to(self.device)
         self.opt = model.configure_optimizers(train_cfg)
         self.raw_model = model  # 保存未 compile 的原始模型引用
@@ -39,7 +47,7 @@ class Trainer:
             try:
                 compiled = torch.compile(model)
                 with torch.no_grad():
-                    n = min(4, model.cfg.ctx_len)
+                    n = min(4, self.ctx_len) if self.ctx_len else 4
                     dummy = torch.randint(0, 2, (1, n), device=self.device)
                     compiled(dummy, targets=dummy)
                 self.model = compiled
@@ -54,7 +62,7 @@ class Trainer:
         self.start_step = 0
 
     def _forward_loss(self, x, y):
-        with _autocast_ctx(self.cfg):
+        with _autocast_ctx(self.cfg, self.device):
             _, loss, _ = self.model(x, targets=y)
         return loss
 
@@ -70,7 +78,7 @@ class Trainer:
 
     def _get_batch(self, data):
         from src.data import get_batch
-        return get_batch(data, self.cfg.batch_size, self.model.cfg.ctx_len, self.device)
+        return get_batch(data, self.cfg.batch_size, self.ctx_len, self.device)
 
     def _next_batch(self):
         """取一个训练 batch（子类可覆写以支持多模态等不同数据形态）。"""
@@ -122,7 +130,7 @@ class Trainer:
             "model": self.raw_model.state_dict(),
             "optimizer": self.opt.state_dict(),
             "step": getattr(self, "_current_step", 0),
-            "cfg": self.raw_model.cfg,
+            "cfg": getattr(self.raw_model, "cfg", None),
             "train_cfg": self.cfg,
         }
         torch.save(ckpt, path)

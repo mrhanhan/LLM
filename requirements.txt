@@ -4,6 +4,7 @@ PyYAML
 pillow
 huggingface_hub
 transformers
+regex
 matplotlib
 pytest
 gradio
