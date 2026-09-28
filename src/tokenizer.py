@@ -273,3 +273,53 @@ class CharTokenizer(_BaseTokenizer):
             if consumed >= max_chars:
                 break
         return cls(list(seen.keys()), {name: i for i, name in enumerate(specials)})
+
+
+class QwenTokenizer(_BaseTokenizer):
+    """适配 Qwen2.5 分词器（从项目内本地目录加载）。
+
+    教学注释：Qwen 用 byte-level BPE，词表约 15 万，中文/代码表现好；
+    我们额外注册一个 <image> 特殊符号供后续 VLM 使用，并把改动持久化到本地目录。
+    """
+
+    def __init__(self, hf, image_token_id: int):
+        self.hf = hf
+        self._image_token_id = image_token_id
+
+    @property
+    def vocab_size(self) -> int:
+        return len(self.hf)
+
+    def _special_map(self) -> dict[str, int]:
+        hf = self.hf
+        pad = hf.pad_token_id if hf.pad_token_id is not None else hf.eos_token_id
+        bos = hf.bos_token_id if hf.bos_token_id is not None else hf.eos_token_id
+        eos = hf.eos_token_id
+        unk = hf.unk_token_id if hf.unk_token_id is not None else hf.eos_token_id
+        return {"pad": pad, "bos": bos, "eos": eos, "unk": unk, "image": self._image_token_id}
+
+    def encode(self, text: str, add_bos: bool = False, add_eos: bool = False) -> list[int]:
+        ids = self.hf.encode(text, add_special_tokens=False)
+        if add_bos:
+            ids = [self.special_id("bos")] + ids
+        if add_eos:
+            ids = ids + [self.special_id("eos")]
+        return ids
+
+    def decode(self, ids) -> str:
+        return self.hf.decode([int(i) for i in ids], skip_special_tokens=False)
+
+    def save(self, save_dir: str) -> None:
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        self.hf.save_pretrained(save_dir)
+
+    @classmethod
+    def load(cls, local_dir: str, add_image_token: bool = True) -> "QwenTokenizer":
+        from transformers import AutoTokenizer
+
+        hf = AutoTokenizer.from_pretrained(local_dir)
+        if add_image_token and "<image>" not in hf.get_vocab():
+            hf.add_special_tokens({"additional_special_tokens": ["<image>"]})
+            hf.save_pretrained(local_dir)  # 持久化，保证重启后 <image> 仍在
+        image_token_id = hf.convert_tokens_to_ids("<image>")
+        return cls(hf, image_token_id)
