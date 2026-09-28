@@ -61,7 +61,9 @@ class Trainer:
         self.logger = JsonlLogger(str(self.out_dir / "metrics.jsonl"))
         self.start_step = 0
 
-    def _forward_loss(self, x, y):
+    def _forward_loss(self, batch):
+        """batch 是 _next_batch() 的返回值：纯文本为 (x, y)，多模态为 collate 后的字典。"""
+        x, y = batch
         with _autocast_ctx(self.cfg, self.device):
             _, loss, _ = self.model(x, targets=y)
         return loss
@@ -71,8 +73,7 @@ class Trainer:
         self.model.eval()
         losses = []
         for _ in range(self.cfg.eval_iters):
-            x, y = self._get_batch(self.val_data)
-            losses.append(self._forward_loss(x, y).item())
+            losses.append(self._forward_loss(self._get_batch(self.val_data)).item())
         self.model.train()
         return sum(losses) / len(losses)
 
@@ -100,8 +101,8 @@ class Trainer:
             # 梯度累积：多个 micro-batch 的梯度平均后再更新一次
             self.opt.zero_grad(set_to_none=True)
             for _ in range(cfg.grad_accum):
-                x, y = self._next_batch()
-                loss = self._forward_loss(x, y) / cfg.grad_accum
+                batch = self._next_batch()
+                loss = self._forward_loss(batch) / cfg.grad_accum
                 loss.backward()
             if cfg.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
@@ -203,9 +204,9 @@ class VLMTrainer(Trainer):
             b = next(self._iter)
         return b
 
-    def _forward_loss(self, b, _unused=None):
-        """基类以 (x, y) 调用；这里第一个参数即为 collate 后的 batch 字典。"""
-        _, loss, _ = self.model(b["input_ids"].to(self.device),
-                                b["pixel_values"].to(self.device),
-                                b["labels"].to(self.device))
+    def _forward_loss(self, batch):
+        """基类以单个 batch 对象调用；这里 batch 是 collate 后的字典。"""
+        _, loss, _ = self.model(batch["input_ids"].to(self.device),
+                                batch["pixel_values"].to(self.device),
+                                batch["labels"].to(self.device))
         return loss

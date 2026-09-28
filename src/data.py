@@ -212,25 +212,34 @@ class SyntheticImageDataset(Dataset):
 
 
 def build_caption_example(tokenizer, caption: str, num_image_tokens: int):
-    """构造"图片 -> 描述"样本：<bos> <image>*N <描述> <eos>，仅文本部分计入损失。"""
+    """构造"图片 -> 描述"样本：<bos> <image>*N <描述> <eos>，仅文本部分计入损失。
+
+    教学注释：因果语言模型预测的是"下一个 token"，而 GPT.forward 用
+    `logits[t]` 对齐 `labels[t]`，所以 labels 必须是 input_ids **右移一位**，
+    并在不需要预测的位置填 -100（图像占位与序列末尾）。
+    最后一张图的向量负责预测第一个文本 token，最后一个文本 token 负责预测 eos。
+    """
     bos = tokenizer.special_id("bos")
     eos = tokenizer.special_id("eos")
     img = tokenizer.special_id("image")
     text_ids = tokenizer.encode(caption)
     input_ids = [bos] + [img] * num_image_tokens + text_ids + [eos]
-    labels = [-100] * (1 + num_image_tokens) + text_ids + [eos]
+    labels = [-100] * num_image_tokens + text_ids + [eos] + [-100]
     return input_ids, labels
 
 
 def build_vqa_example(tokenizer, question: str, answer: str, num_image_tokens: int):
-    """构造 VQA 样本：<bos> <image>*N 问题 答：<答案> <eos>。"""
+    """构造 VQA 样本：<bos> <image>*N 问题 答：<答案> <eos>。
+
+    同样地，labels 右移一位：从"答："之后开始监督答案，最后一个 token 预测 eos。
+    """
     bos = tokenizer.special_id("bos")
     eos = tokenizer.special_id("eos")
     img = tokenizer.special_id("image")
     prompt_ids = [bos] + [img] * num_image_tokens + tokenizer.encode(question + "答：")
     answer_ids = tokenizer.encode(answer) + [eos]
     input_ids = prompt_ids + answer_ids
-    labels = [-100] * len(prompt_ids) + answer_ids
+    labels = [-100] * (len(prompt_ids) - 1) + answer_ids + [-100]
     return input_ids, labels
 
 
