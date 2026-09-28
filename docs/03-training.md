@@ -183,7 +183,7 @@ self.model = compiled
 | loss 反复剧烈震荡 | lr 太大 / batch 太小 | 降 lr、加大等效 batch |
 | loss 变 NaN | 数值爆炸 | 降 lr、确认梯度裁剪开启、检查数据 |
 
-> 本项目的新闻语料是故事续写，`dropout=0`，所以 train/val 曲线通常比较贴近；
+> 本项目用的是故事语料，任务是故事续写，`dropout=0`，所以 train/val 曲线通常比较贴近；
 > 若 val 明显比 train 高，多半是数据分布差异或过拟合。
 
 ---

@@ -195,8 +195,9 @@ Qwen 词表有 151666 个 token，超过 `uint16` 上限 65535，必须用 4 字
 `uint16`，但为了统一，本项目一律 `uint32`。
 
 **Q4：控制台打印中文报 `UnicodeEncodeError`？**
-入口脚本已强制 `sys.stdout.reconfigure(encoding="utf-8")`。若仍异常，先执行
-`$env:PYTHONUTF8=1` 再运行。
+`scripts/train_gpt.py` 与 `scripts/prepare_data_part1.py` 已强制 `sys.stdout.reconfigure(encoding="utf-8")`。
+`scripts/chat.py` 与 `scripts/prepare_data_part2.py` 未加此保护，若报编码错误，先执行
+`$env:PYTHONUTF8=1`（或设置同名系统环境变量）再运行。
 
 **Q5：下载超时 / 连接失败？**
 项目统一走 `HF_ENDPOINT=https://hf-mirror.com`。如果仍失败，检查网络或手动确认该镜像可用。
