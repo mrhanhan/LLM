@@ -140,7 +140,8 @@ P:\Demo\LLM\
 │  └─ utils.py                # 种子、LR 调度、日志、loss 曲线
 ├─ scripts/
 │  ├─ prepare_data_part1.py   # 下载分词器与语料
-│  ├─ prepare_data_part2.py   # 编码成 train.bin / val.bin
+│  ├─ prepare_data_part2.py   # 编码成 train.bin / val.bin（--tokenizer_kind qwen|bpe|char）
+│  ├─ train_tokenizer.py      # 训练并保存手写 BPE 词表
 │  ├─ train_gpt.py            # 训练入口
 │  └─ chat.py                 # 命令行聊天
 ├─ tests/                     # pytest 单元测试
@@ -195,9 +196,9 @@ Qwen 词表有 151666 个 token，超过 `uint16` 上限 65535，必须用 4 字
 `uint16`，但为了统一，本项目一律 `uint32`。
 
 **Q4：控制台打印中文报 `UnicodeEncodeError`？**
-`scripts/train_gpt.py` 与 `scripts/prepare_data_part1.py` 已强制 `sys.stdout.reconfigure(encoding="utf-8")`。
-`scripts/chat.py` 与 `scripts/prepare_data_part2.py` 未加此保护，若报编码错误，先执行
-`$env:PYTHONUTF8=1`（或设置同名系统环境变量）再运行。
+`scripts/train_gpt.py`、`scripts/train_tokenizer.py`、`scripts/prepare_data_part1.py`
+与 `scripts/prepare_data_part2.py` 都已强制 `sys.stdout.reconfigure(encoding="utf-8")`。
+`scripts/chat.py` 未加此保护，若报编码错误，先执行 `$env:PYTHONUTF8=1`（或设置同名系统环境变量）再运行。
 
 **Q5：下载超时 / 连接失败？**
 项目统一走 `HF_ENDPOINT=https://hf-mirror.com`。如果仍失败，检查网络或手动确认该镜像可用。
@@ -206,6 +207,22 @@ Qwen 词表有 151666 个 token，超过 `uint16` 上限 65535，必须用 4 字
 不会，已在 `.gitignore` 忽略。分词器、语料、checkpoint、曲线都不入库。
 
 **Q7：怎么换用手写 BPE 分词器做对比？**
-当前 `prepare_data_part2.py` 固定用 Qwen 分词器编码。要对比 BPE，需要先用
-`BPETokenizer.train(...)` 产出词表并**用它重新编码一份 train.bin/val.bin**，再配
-`configs/gpt_bpe.yaml` 训练。细节见 [docs/01-tokenizer.md](docs/01-tokenizer.md)。
+`scripts/prepare_data_part2.py` 支持 `--tokenizer_kind {qwen,bpe,char}`（默认 `qwen`）。
+改用手写 BPE 只需三步：
+
+```powershell
+# 1) 用同一批 jsonl 语料训练并保存一份 BPE 词表
+& ".venv\Scripts\python.exe" scripts/train_tokenizer.py --max_bytes 3000000
+
+# 2) 用该 BPE 词表重新编码一份 train.bin / val.bin（注意输出名带 bpe_，避免覆盖 Qwen 数据）
+& ".venv\Scripts\python.exe" scripts/prepare_data_part2.py --tokenizer_kind bpe `
+  --tokenizer_dir data/tokenizer/bpe_16k `
+  --out data/processed/text/bpe_train.bin --val data/processed/text/bpe_val.bin --max_docs 2000
+
+# 3) 用 BPE 配置训练（gpt_bpe.yaml 已指向上面两份 bpe_*.bin）
+& ".venv\Scripts\python.exe" scripts/train_gpt.py --config configs/gpt_bpe.yaml
+```
+
+> 说明：`train_tokenizer.py` 默认目标词表 16384；若语料子集较小，`min_frequency=2`
+> 会在高频对被合并完时提前停止，实际词表可能小于目标（`train_gpt.py` 会用分词器
+> 真实 `vocab_size` 覆盖配置）。细节见 [docs/01-tokenizer.md](docs/01-tokenizer.md)。

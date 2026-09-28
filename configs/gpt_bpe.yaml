@@ -11,8 +11,8 @@ model:
 data:
   tokenizer_kind: bpe
   tokenizer_dir: data/tokenizer/bpe_16k
-  train_bin: data/processed/text/train.bin
-  val_bin: data/processed/text/val.bin
+  train_bin: data/processed/text/bpe_train.bin
+  val_bin: data/processed/text/bpe_val.bin
 train:
   batch_size: 8
   grad_accum: 8

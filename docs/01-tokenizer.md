@@ -1,7 +1,7 @@
 # 01 · 分词器（Tokenizer）
 
 > 对应代码：`src/tokenizer.py`、`src/data.py`
-> 运行脚本：`scripts/prepare_data_part1.py`、`scripts/prepare_data_part2.py`
+> 运行脚本：`scripts/prepare_data_part1.py`、`scripts/train_tokenizer.py`、`scripts/prepare_data_part2.py`
 
 语言模型本质是一个「在离散符号序列上做下一 token 预测」的模型，它不认识文字，只认整数 id。
 **分词器就是「文本 ⇄ 整数序列」的翻译器**，它决定了模型的「字母表」有多大、一句话会变成多长。
@@ -221,22 +221,26 @@ def build_text_bin(tokenizer, texts, out_path, val_bin_path=None,
 
 **步骤 1：用同一批语料训练一个 16k BPE 词表**（纯 Python 较慢，建议先取子集）：
 
-```python
-from src.tokenizer import BPETokenizer
-from src.data import iter_texts
-files = [str(p) for p in __import__("pathlib").Path("data/raw/text/tinystories_zh/jsonl").glob("*.jsonl")]
-tok = BPETokenizer.train(iter_texts(files), vocab_size=16384, min_frequency=2)
-tok.save("data/tokenizer/bpe_16k")
+```powershell
+# 内部等价于 BPETokenizer.train(iter_texts(files), vocab_size=16384, min_frequency=2)
+& ".venv\Scripts\python.exe" scripts/train_tokenizer.py --max_bytes 3000000
+# 产物：data/tokenizer/bpe_16k/{merges.json, vocab.json, specials.json}
 ```
 
-**步骤 2：用两套分词器分别编码同一批文本**
+> 说明：目标词表由 `--vocab_size`（默认 16384）控制；若语料子集较小，`min_frequency=2`
+> 会在高频对被合并完后提前停止，实际词表可能小于目标。
 
-```python
-texts = ["小猫在草地上跑来跑去，非常开心。", ...]
-for tok in (qwen_tok, bpe_tok):
-    ids = tok.encode(texts[0])
-    assert tok.decode(ids) == texts[0]        # 都必须可逆
+**步骤 2：用 BPE 分词器重新编码一份数据**
+
+```powershell
+& ".venv\Scripts\python.exe" scripts/prepare_data_part2.py --tokenizer_kind bpe `
+  --tokenizer_dir data/tokenizer/bpe_16k `
+  --out data/processed/text/bpe_train.bin --val data/processed/text/bpe_val.bin --max_docs 2000
 ```
+
+`prepare_data_part2.py` 的 `--tokenizer_kind {qwen,bpe,char}` 默认 `qwen`，因此原有 Qwen
+流程不受影响；切换为 `bpe` 后，编码与特殊符号都来自 BPE 词表，id 语义与
+`configs/gpt_bpe.yaml` 完全一致。
 
 **步骤 3：对比这些指标**
 
@@ -252,10 +256,10 @@ for tok in (qwen_tok, bpe_tok):
 **结论**：Qwen 词表大、压缩率高、效果最好，所以**默认使用**；手写 BPE 词表小、可完全掌控，
 适合观察 BPE 的合并过程，并用 `gpt_bpe.yaml` 做「词表大小 → 参数量」的对比。
 
-> ⚠️ 当前代码的一个限制：`scripts/prepare_data_part2.py` 硬编码使用 `QwenTokenizer`。
-> 若要真正用 BPE 训练，需要**另写/改造预处理脚本，用 BPE 分词器重新编码一份
-> `train.bin`/`val.bin`**，否则 `gpt_bpe.yaml` 会把 Qwen 编码的数据喂给 BPE 词表，id 语义不一致。
-> `configs/gpt_bpe.yaml` 里的 `tokenizer_dir: data/tokenizer/bpe_16k` 也需要按步骤 1 先生成。
+> ✅ 已接通：`scripts/train_tokenizer.py` 负责训练并保存 BPE 词表，
+> `scripts/prepare_data_part2.py --tokenizer_kind bpe` 负责用 BPE 重新编码数据，
+> `configs/gpt_bpe.yaml` 已指向 `data/processed/text/bpe_{train,val}.bin`，
+> 直接 `scripts/train_gpt.py --config configs/gpt_bpe.yaml` 即可训练。
 
 ---
 
