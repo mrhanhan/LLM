@@ -55,6 +55,7 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.idea/
 data/
 out/
 *.png
@@ -549,7 +550,8 @@ class BPETokenizer(_BaseTokenizer):
 
     @property
     def vocab_size(self) -> int:
-        return self._base_size + len(self.merges) + len(self._special_to_id)
+        # 布局 = 特殊符号 + 256 字节 + merges，_base_size 已含特殊符号，勿重复相加
+        return self._base_size + len(self.merges)
 
     def _special_map(self) -> dict[str, int]:
         return self._special_to_id
@@ -558,7 +560,8 @@ class BPETokenizer(_BaseTokenizer):
         """把普通文本转成 id 序列（不含特殊符号）。"""
         ids: list[int] = []
         for chunk in _PRE_TOKEN.findall(text):
-            symbols = tuple(chunk.encode("utf-8"))
+            # 初始符号用字节的"全局 id"（byte_offset + b），与 train 的词表布局一致
+            symbols = tuple(self._byte_offset + b for b in chunk.encode("utf-8"))
             while len(symbols) >= 2:
                 pairs = _get_pairs(symbols)
                 # 在所有相邻对里，选择 merge rank 最小（最早学到）的一对合并
@@ -569,7 +572,7 @@ class BPETokenizer(_BaseTokenizer):
                 )
                 if pair is None:
                     break
-                symbols = _merge(symbols, pair, self.merge_ranks[pair] + self._byte_offset)
+                symbols = _merge(symbols, pair, self.merge_ranks[pair] + self._base_size)
             ids.extend(symbols)
         return ids
 
@@ -634,11 +637,12 @@ class BPETokenizer(_BaseTokenizer):
         vocab = {byte_offset + b: bytes([b]) for b in range(256)}
 
         # 1) 统计词频（同一 word 只处理一次，加速）
+        #    注意：初始符号统一用全局 id（byte_offset + 字节值），与 encode 保持一致
         word_freq: Counter = Counter()
         consumed = 0
         for text in texts:
             for chunk in _PRE_TOKEN.findall(text):
-                word_freq[tuple(chunk.encode("utf-8"))] += 1
+                word_freq[tuple(byte_offset + b for b in chunk.encode("utf-8"))] += 1
             consumed += len(text.encode("utf-8"))
             if consumed >= max_bytes:
                 break
@@ -816,7 +820,7 @@ def download_tinystories(dest_dir: str) -> list[str]:
         members = [m for m in tar.getmembers() if m.name.endswith(".jsonl")]
         for m in members:
             m.name = Path(m.name).name  # 去掉目录前缀，避免路径穿越
-            tar.extract(m, jsonl_dir)
+            tar.extract(m, jsonl_dir, filter="data")
     return sorted(str(p) for p in jsonl_dir.glob("*.jsonl"))
 
 
@@ -2116,6 +2120,211 @@ RoPE 的旋转直觉；因果 mask 为什么必要；GQA 如何省显存；权�
 ```bash
 git add README.md docs/01-tokenizer.md docs/02-transformer.md docs/03-training.md
 git commit -m "docs: README and text-LLM principle guides"
+```
+
+---
+
+### Task 11: 手写 BPE 分词器端到端可用（训练脚本 + BPE 数据 + 配置）
+
+> 新增任务：spec 的 M1 交付物 `scripts/train_tokenizer.py` 未被任何任务实现，导致 `configs/gpt_bpe.yaml` 不可用。本任务补齐，使手写 BPE 能真正训练并用于训练 GPT。
+
+**Files:**
+- Create: `scripts/train_tokenizer.py`
+- Modify: `scripts/prepare_data_part2.py`（新增 `--tokenizer_kind`，默认 qwen 不影响原流程）
+- Modify: `configs/gpt_bpe.yaml`（数据路径指向 BPE 编码产物）
+- Modify: `README.md`、`docs/01-tokenizer.md`（把 BPE 配置的"未接通"说明改为可运行说明）
+- Create: `tests/test_train_tokenizer.py`
+
+**Interfaces:**
+- Consumes: `src.data.iter_texts(paths) -> Iterator[str]`；`src.tokenizer.BPETokenizer.train(texts, vocab_size=16384, min_frequency=2, specials=SPECIALS, max_bytes=20_000_000, verbose=True)`、`BPETokenizer.load(dir)`、`.save(dir)`；`QwenTokenizer.load(dir)`。
+- Produces: `scripts/train_tokenizer.py`（CLI：`--raw_dir --out --vocab_size --max_bytes`）；`scripts/prepare_data_part2.py --tokenizer_kind {qwen,bpe}`。
+
+- [ ] **Step 1: 写失败测试** `tests/test_train_tokenizer.py`
+
+```python
+# 教学注释：验证手写 BPE 能从 jsonl 语料训练并保存，随后能被 prepare_data_part2 用
+# --tokenizer_kind bpe 编码成 .bin，且保存/加载后分词往返一致。
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from src.tokenizer import BPETokenizer
+
+CORPUS = ["从前有座山，山里有庙。", "小猫在草地上跑。", "太阳 sun 月亮 moon。"] * 20
+
+
+def _write_raw(tmp_path):
+    raw = tmp_path / "jsonl"
+    raw.mkdir()
+    (raw / "a.jsonl").write_text(
+        "\n".join(json.dumps({"story_zh": s}, ensure_ascii=False) for s in CORPUS),
+        encoding="utf-8",
+    )
+    return raw
+
+
+def test_train_tokenizer_script(tmp_path):
+    raw = _write_raw(tmp_path)
+    out = tmp_path / "bpe"
+    r = subprocess.run(
+        [sys.executable, "scripts/train_tokenizer.py",
+         "--raw_dir", str(raw), "--out", str(out),
+         "--vocab_size", "400", "--max_bytes", "100000"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 0, r.stderr
+    tok = BPETokenizer.load(str(out))
+    assert tok.decode(tok.encode("甲乙")) == "甲乙"
+
+
+def test_prepare_data_part2_bpe(tmp_path):
+    raw = _write_raw(tmp_path)
+    tp = tmp_path / "bpe"
+    subprocess.run(
+        [sys.executable, "scripts/train_tokenizer.py",
+         "--raw_dir", str(raw), "--out", str(tp),
+         "--vocab_size", "400", "--max_bytes", "100000"],
+        check=True, capture_output=True, text=True, encoding="utf-8",
+    )
+    tbin = tmp_path / "train.bin"
+    vbin = tmp_path / "val.bin"
+    r = subprocess.run(
+        [sys.executable, "scripts/prepare_data_part2.py",
+         "--tokenizer_kind", "bpe", "--tokenizer_dir", str(tp),
+         "--raw_dir", str(raw), "--out", str(tbin), "--val", str(vbin)],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 0, r.stderr
+    arr = np.fromfile(str(tbin), dtype=np.uint32)
+    assert len(arr) > 0
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `.venv\Scripts\python -m pytest tests/test_train_tokenizer.py -v`
+Expected: FAIL（脚本不存在 / `--tokenizer_kind` 未支持）
+
+- [ ] **Step 3: 实现 `scripts/train_tokenizer.py`**
+
+```python
+"""训练手写字节级 BPE 分词器并保存到 data/tokenizer/bpe_16k/。
+
+教学用途：语料子集上真训一个 16k 词表，用于与 Qwen 分词器做对比实验。
+"""
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+from src.data import iter_texts
+from src.tokenizer import BPETokenizer
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--raw_dir", default="data/raw/text/tinystories_zh/jsonl")
+    ap.add_argument("--out", default="data/tokenizer/bpe_16k")
+    ap.add_argument("--vocab_size", type=int, default=16384)
+    ap.add_argument("--max_bytes", type=int, default=20_000_000)
+    args = ap.parse_args()
+
+    files = sorted(str(p) for p in Path(args.raw_dir).glob("*.jsonl"))
+    if not files:
+        raise SystemExit(f"未找到 jsonl 语料：{args.raw_dir}")
+    print(f"从 {len(files)} 个文件训练 BPE，目标词表 {args.vocab_size}，"
+          f"最多读取 {args.max_bytes} 字节…")
+    tok = BPETokenizer.train(iter_texts(files), vocab_size=args.vocab_size,
+                             max_bytes=args.max_bytes)
+    tok.save(args.out)
+    print(f"完成：词表 {tok.vocab_size}，已保存到 {args.out}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: 修改 `scripts/prepare_data_part2.py` 支持 `--tokenizer_kind`**
+
+把 `main()` 里的分词器构建替换为按类型选择（保持默认 qwen，不影响原有命令）：
+
+```python
+def build_tokenizer(kind: str, tokenizer_dir: str):
+    if kind == "qwen":
+        from src.tokenizer import QwenTokenizer
+        return QwenTokenizer.load(tokenizer_dir)
+    if kind == "bpe":
+        from src.tokenizer import BPETokenizer
+        return BPETokenizer.load(tokenizer_dir)
+    from src.tokenizer import CharTokenizer
+    return CharTokenizer.load(tokenizer_dir)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tokenizer_kind", default="qwen", choices=["qwen", "bpe", "char"])
+    ap.add_argument("--tokenizer_dir", default="data/tokenizer/qwen2.5-0.5b")
+    ap.add_argument("--raw_dir", default="data/raw/text/tinystories_zh/jsonl")
+    ap.add_argument("--out", default="data/processed/text/train.bin")
+    ap.add_argument("--val", default="data/processed/text/val.bin")
+    ap.add_argument("--max_docs", type=int, default=None)
+    args = ap.parse_args()
+
+    tok = build_tokenizer(args.tokenizer_kind, args.tokenizer_dir)
+    files = sorted(str(p) for p in Path(args.raw_dir).glob("*.jsonl"))
+    print(f"分词器 {args.tokenizer_kind}（词表 {tok.vocab_size}），语料文件 {len(files)} 个，开始编码…")
+    n_train, n_val = build_text_bin(
+        tok, iter_texts(files), args.out, val_bin_path=args.val, max_docs=args.max_docs
+    )
+    print(f"完成：train={n_train} tokens, val={n_val} tokens")
+```
+
+- [ ] **Step 5: 修改 `configs/gpt_bpe.yaml` 的数据路径**
+
+确保其内容包含：
+
+```yaml
+data:
+  tokenizer_kind: bpe
+  tokenizer_dir: data/tokenizer/bpe_16k
+  train_bin: data/processed/text/bpe_train.bin
+  val_bin: data/processed/text/bpe_val.bin
+model:
+  vocab_size: 16384
+train:
+  out_dir: out/gpt_bpe
+```
+
+- [ ] **Step 6: 运行测试确认通过**
+
+Run: `.venv\Scripts\python -m pytest tests/test_train_tokenizer.py -v`
+Expected: PASS
+
+- [ ] **Step 7: 真训一个 BPE 词表并编码一份 BPE 数据（验证端到端）**
+
+Run（可先小规模）: `.venv\Scripts\python scripts/train_tokenizer.py --max_bytes 3000000`
+Run: `.venv\Scripts\python scripts/prepare_data_part2.py --tokenizer_kind bpe --tokenizer_dir data/tokenizer/bpe_16k --out data/processed/text/bpe_train.bin --val data/processed/text/bpe_val.bin --max_docs 2000`
+Expected: 打印词表大小、保存目录、BPE 数据 token 数
+
+- [ ] **Step 8: 更新文档**
+
+- `README.md`、`docs/01-tokenizer.md`：把 `configs/gpt_bpe.yaml` 的"未接通"说明改为可运行说明（先 `train_tokenizer.py`，再 `prepare_data_part2.py --tokenizer_kind bpe`，然后 `train_gpt.py --config configs/gpt_bpe.yaml`）。
+
+- [ ] **Step 9: 运行全量测试并提交**
+
+Run: `.venv\Scripts\python -m pytest tests/ -v`
+Expected: 全部通过
+
+```bash
+git add scripts/train_tokenizer.py scripts/prepare_data_part2.py configs/gpt_bpe.yaml tests/test_train_tokenizer.py README.md docs/01-tokenizer.md
+git commit -m "feat: end-to-end custom BPE tokenizer training and BPE data path"
 ```
 
 ---

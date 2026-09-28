@@ -307,7 +307,7 @@ def test_build_index_and_dataset(tmp_path):
     out = tmp_path / "index.jsonl"
     n = build_caption_index(str(raw), str(out))
     assert n == 3
-    ds = CaptionDataset(str(out), img_size=64)
+    ds = CaptionDataset(str(out), img_size=64, raw_dir=str(raw))
     assert len(ds) == 3
     item = ds[0]
     assert item["image"].shape == (3, 64, 64)
@@ -370,7 +370,12 @@ class CaptionDataset(Dataset):
     def __init__(self, index_jsonl: str, img_size: int = 128, raw_dir: str | None = None):
         self.items = [json.loads(l) for l in Path(index_jsonl).read_text(encoding="utf-8").splitlines() if l.strip()]
         self.img_size = img_size
-        self.raw_dir = Path(raw_dir) if raw_dir else Path(index_jsonl).resolve().parents[2] / "raw" / "image" / "children_caption"
+        # index 位于 data/processed/image/children/index.jsonl，
+        # parents[3] 即 data/ 目录；找不到时回退到约定路径
+        if raw_dir:
+            self.raw_dir = Path(raw_dir)
+        else:
+            self.raw_dir = Path(index_jsonl).resolve().parents[3] / "raw" / "image" / "children_caption"
         self.items = [it for it in self.items if (self.raw_dir / it["image"]).exists()]
 
     def __len__(self):
@@ -1043,7 +1048,7 @@ Expected: 打印 loss 并生成 `out/vlm/latest.pt`、`out/vlm/loss.png`
 
 - [ ] **Step 8: 过拟合小样本验证（合成数据应当学到颜色/形状/位置）**
 
-Run: `.venv\Scripts\python scripts/train_vlm.py --set data_kind=synthetic train.max_steps=800 train.lr=3e-4`
+Run: `.venv\Scripts\python scripts/train_vlm.py --set train.max_steps=800 train.lr=3e-4`
 Expected: loss 明显下降（<1.0 量级）；用 `generate_caption` 检查描述接近真实
 
 - [ ] **Step 9: 提交**
