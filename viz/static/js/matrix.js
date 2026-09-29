@@ -4,9 +4,11 @@ import { divergingRGB } from './colors.js';
 
 const loader = new THREE.TextureLoader();
 
-export function buildPlane(spec, source = 'live', tiles = 64, height = 0.9) {
-  const aspect = spec.shape[0] / spec.shape[1];
-  const geo = new THREE.PlaneGeometry(height / aspect, height);
+const HEIGHT = 0.9;
+const MIN_EXTENT = 0.04;
+
+export function buildPlane(spec, source = 'live', tiles = 64, height = HEIGHT) {
+  const geo = new THREE.PlaneGeometry(height, height);
   const tex = loader.load(matrixPngUrl(spec.name, source, tiles, 'global'));
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.LinearFilter;
@@ -18,7 +20,7 @@ export function buildPlane(spec, source = 'live', tiles = 64, height = 0.9) {
   return mesh;
 }
 
-export async function buildCubes(spec, source = 'live', height = 0.9) {
+export async function buildCubes(spec, source = 'live', height = HEIGHT) {
   const { values } = await getGrid(spec.name, source, 256);
   const rows = values.length;
   const cols = values[0] ? values[0].length : 0;
@@ -27,7 +29,8 @@ export async function buildCubes(spec, source = 'live', height = 0.9) {
     for (const v of row) absmax = Math.max(absmax, Math.abs(v));
   }
   const cell = height / Math.max(rows, cols, 1);
-  const geo = new THREE.BoxGeometry(cell * 0.92, cell * 0.92, cell * 0.92);
+  const size = Math.max(cell, MIN_EXTENT);
+  const geo = new THREE.BoxGeometry(size, size, size);
   const mat = new THREE.MeshBasicMaterial();
   const mesh = new THREE.InstancedMesh(geo, mat, Math.max(rows * cols, 1));
   const m = new THREE.Matrix4();

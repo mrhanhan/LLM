@@ -94,7 +94,13 @@ export class Shelf {
 
   async expand(layerId) {
     this.expanded = this.expanded === layerId ? null : layerId;
-    if (this.expanded) await this._buildMatrices(this.expanded);
+    if (this.expanded) {
+      try {
+        await this._buildMatrices(this.expanded);
+      } catch (e) {
+        console.error('构建矩阵失败', this.expanded, e);
+      }
+    }
     for (const [id, tray] of this.trays) {
       const isExpanded = id === this.expanded;
       tray.userData.targetOpacity = isExpanded
@@ -108,23 +114,36 @@ export class Shelf {
 
   async _buildMatrices(layerId) {
     const tray = this.trays.get(layerId);
-    if (!tray || tray.userData.matrixMeshes) return;
+    if (!tray || tray.userData.matrixMeshes || tray.userData.building) return;
     const specs = this.byLayer.get(layerId) || [];
     const n = specs.length;
     const built = [];
-    tray.userData.matrixMeshes = built; // 占位：避免并发重复构建
-    for (let i = 0; i < n; i++) {
-      const spec = specs[i];
-      const mesh = spec.small
-        ? await buildCubes(spec, this.source, MATRIX_H)
-        : buildPlane(spec, this.source, 64, MATRIX_H);
-      mesh.position.x = (i - (n - 1) / 2) * MATRIX_PITCH;
-      mesh.position.z = MATRIX_Z;
-      mesh.visible = false;
-      tray.add(mesh);
-      built.push(mesh);
-      this.meshes.push(mesh);
+    tray.userData.building = true; // 仅作并发去重，成功后不保留
+    try {
+      for (let i = 0; i < n; i++) {
+        const spec = specs[i];
+        const mesh = spec.small
+          ? await buildCubes(spec, this.source, MATRIX_H)
+          : buildPlane(spec, this.source, 64, MATRIX_H);
+        mesh.position.x = (i - (n - 1) / 2) * MATRIX_PITCH;
+        mesh.position.z = MATRIX_Z;
+        mesh.visible = false;
+        tray.add(mesh);
+        built.push(mesh);
+        this.meshes.push(mesh);
+      }
+    } catch (e) {
+      // 失败回滚：移除已加入的部分网格，且不缓存，以便重试
+      for (const mesh of built) {
+        tray.remove(mesh);
+        const idx = this.meshes.indexOf(mesh);
+        if (idx >= 0) this.meshes.splice(idx, 1);
+      }
+      throw e;
+    } finally {
+      tray.userData.building = false;
     }
+    tray.userData.matrixMeshes = built;
     for (const mesh of built) mesh.visible = this.expanded === layerId;
   }
 
