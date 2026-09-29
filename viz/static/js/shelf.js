@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildPlane, buildCubes } from './matrix.js';
 
 const GAP = 1.25;
 const SLAB_W = 4.2;
@@ -6,7 +7,10 @@ const SLAB_H = 0.35;
 const SLAB_D = 1.2;
 const BASE_OPACITY = 0.7;
 const DIM_OPACITY = 0.25;
-const FOCUS_OPACITY = 1.0;
+const SLAB_FADE = 0.12; // 展开层薄板淡出，给矩阵板让位（仍可拾取）
+const MATRIX_H = 0.9;
+const MATRIX_PITCH = MATRIX_H + 0.15;
+const MATRIX_Z = SLAB_D / 2 + 0.05;
 
 function makeLabel(text) {
   const pad = 16;
@@ -32,9 +36,10 @@ function makeLabel(text) {
 }
 
 export class Shelf {
-  constructor(group, graph) {
+  constructor(group, graph, source = 'live') {
     this.group = group;
     this.graph = graph;
+    this.source = source;
     this.byLayer = new Map();
     this.trays = new Map();
     this.meshes = [];
@@ -87,15 +92,43 @@ export class Shelf {
     });
   }
 
-  expand(layerId) {
+  async expand(layerId) {
     this.expanded = this.expanded === layerId ? null : layerId;
+    if (this.expanded) await this._buildMatrices(this.expanded);
     for (const [id, tray] of this.trays) {
-      tray.userData.targetOpacity =
-        id === this.expanded ? FOCUS_OPACITY : this.expanded ? DIM_OPACITY : BASE_OPACITY;
+      const isExpanded = id === this.expanded;
+      tray.userData.targetOpacity = isExpanded
+        ? SLAB_FADE
+        : this.expanded
+          ? DIM_OPACITY
+          : BASE_OPACITY;
+      for (const mesh of tray.userData.matrixMeshes || []) mesh.visible = isExpanded;
     }
   }
 
+  async _buildMatrices(layerId) {
+    const tray = this.trays.get(layerId);
+    if (!tray || tray.userData.matrixMeshes) return;
+    const specs = this.byLayer.get(layerId) || [];
+    const n = specs.length;
+    const built = [];
+    tray.userData.matrixMeshes = built; // 占位：避免并发重复构建
+    for (let i = 0; i < n; i++) {
+      const spec = specs[i];
+      const mesh = spec.small
+        ? await buildCubes(spec, this.source, MATRIX_H)
+        : buildPlane(spec, this.source, 64, MATRIX_H);
+      mesh.position.x = (i - (n - 1) / 2) * MATRIX_PITCH;
+      mesh.position.z = MATRIX_Z;
+      mesh.visible = false;
+      tray.add(mesh);
+      built.push(mesh);
+      this.meshes.push(mesh);
+    }
+    for (const mesh of built) mesh.visible = this.expanded === layerId;
+  }
+
   pickables() {
-    return this.meshes;
+    return this.meshes.filter((m) => m.userData && m.userData.role === 'slab');
   }
 }

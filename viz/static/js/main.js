@@ -19,13 +19,32 @@ export const modelGroup = new THREE.Group();
 scene.add(modelGroup);
 
 let shelf = null;
+const SOURCE = 'live';
 try {
-  const graph = await getModel('live');
-  shelf = new Shelf(modelGroup, graph);
+  const graph = await getModel(SOURCE);
+  shelf = new Shelf(modelGroup, graph, SOURCE);
   window.__shelf = shelf;
 } catch (e) {
   console.error('加载模型图失败', e);
 }
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let pointerDown = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  pointerDown = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!shelf || !pointerDown) return;
+  const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+  pointerDown = null;
+  if (moved > 5) return;
+  pointer.x = (e.clientX / innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(shelf.pickables(), false);
+  if (hits.length) shelf.expand(hits[0].object.userData.layerId).catch(console.error);
+});
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
