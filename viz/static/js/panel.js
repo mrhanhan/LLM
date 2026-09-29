@@ -116,18 +116,25 @@ export class Panel {
     this.linkBtn.textContent = this.linksOn ? '关闭神经元连线' : '神经元连线';
   }
 
+  linksOff() {
+    if (!this.linksOn) return;
+    this.linksOn = false;
+    this.linkSeq += 1;
+    if (this.cloudGroup) disposeCloud(this.cloudGroup);
+    if (this.linkBtn) this.linkBtn.disabled = false;
+    this._refreshLinkBtn();
+  }
+
   async _toggleNeuronLinks() {
     if (!this.spec || this.spec.small !== true || !this.cloudGroup) return;
     const group = this.cloudGroup;
     if (this.linksOn) {
-      this.linksOn = false;
-      this.linkSeq += 1;
-      disposeCloud(group);
-      this._refreshLinkBtn();
+      this.linksOff();
       return;
     }
     this.linksOn = true;
     const mySeq = ++this.linkSeq;
+    window.__cloudOff?.();
     const btn = this.linkBtn;
     if (btn) {
       btn.disabled = true;
@@ -135,10 +142,7 @@ export class Panel {
     }
     try {
       await showNeuronLinks(group, this.spec.name, this.source, 800);
-      if (mySeq !== this.linkSeq) {
-        disposeCloud(group);
-        return;
-      }
+      if (mySeq !== this.linkSeq) return;
     } catch (e) {
       if (mySeq !== this.linkSeq) return;
       this.linksOn = false;
@@ -173,8 +177,9 @@ export class Panel {
     this._setActive();
     this.linksOn = false;
     this.linkSeq += 1;
+    if (this.linkBtn) this.linkBtn.disabled = false;
     this._refreshLinkBtn();
-    if (this.linkRow) this.linkRow.style.display = spec.small ? 'flex' : 'none';
+    if (this.linkRow) this.linkRow.style.display = spec.small === true ? 'flex' : 'none';
     this.nameEl.textContent = spec.name || '';
     this.labelEl.textContent = spec.label || '';
     const [o, i] = spec.shape || [];

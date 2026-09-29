@@ -45,18 +45,27 @@ function refreshCloudBtn() {
   btn.textContent = cloudOn ? '关闭点云' : '点云';
 }
 
+function cloudOff() {
+  if (!cloudOn) return;
+  cloudOn = false;
+  cloudSeq += 1;
+  disposeCloud(cloudGroup);
+  const btn = document.getElementById('cloudBtn');
+  if (btn) btn.disabled = false;
+  refreshCloudBtn();
+}
+window.__cloudOff = cloudOff;
+
 async function onCloudClick() {
   const btn = document.getElementById('cloudBtn');
   if (!cloudMatrix) return;
   if (cloudOn) {
-    cloudOn = false;
-    cloudSeq += 1;
-    disposeCloud(cloudGroup);
-    refreshCloudBtn();
+    cloudOff();
     return;
   }
   cloudOn = true;
   const mySeq = ++cloudSeq;
+  window.__panel?.linksOff?.();
   if (btn) {
     btn.disabled = true;
     btn.textContent = '加载中…';
