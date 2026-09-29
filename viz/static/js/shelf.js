@@ -44,17 +44,15 @@ export class Shelf {
 
   _build() {
     const layers = this.graph.layers || [];
-    const n = layers.length;
-    layers.forEach((L, idx) => {
+    layers.forEach((L) => {
       const tray = new THREE.Group();
-      tray.position.y = ((n - 1) / 2 - idx) * GAP;
       tray.userData.layerId = L.id;
       tray.userData.targetOpacity = BASE_OPACITY;
 
       const material = new THREE.MeshStandardMaterial({
         color: 0x2f63d8,
         transparent: true,
-        opacity: 0.55,
+        opacity: BASE_OPACITY,
         roughness: 0.55,
         metalness: 0.1,
       });
@@ -76,6 +74,16 @@ export class Shelf {
         L.id,
         (this.graph.matrices || []).filter((m) => m.layer === L.id)
       );
+    });
+    this.layout();
+  }
+
+  layout() {
+    const layers = this.graph.layers || [];
+    const n = layers.length;
+    layers.forEach((L, idx) => {
+      const tray = this.trays.get(L.id);
+      if (tray) tray.position.y = ((n - 1) / 2 - idx) * GAP;
     });
   }
 
