@@ -45,13 +45,17 @@ def _apply_repetition_penalty(logits, prev_ids, penalty):
 def generate(model, tokenizer, prompt: str, max_new_tokens: int = 128,
              temperature: float = 0.8, top_k=None, top_p: float | None = 0.9,
              repetition_penalty: float = 1.0, device: str = "cuda",
-             generator=None) -> str:
-    """给定提示词，自回归生成文本。使用 KV 缓存避免重复计算。"""
+             generator=None, stop_ids: list[int] | None = None) -> str:
+    """给定提示词，自回归生成文本。使用 KV 缓存避免重复计算。
+
+    教学注释：stop_ids 支持"遇到任一指定 token 就停"，聊天场景用 <|im_end|> 停止，
+    基座续写沿用 eos。stop token 本身不进入输出。
+    """
     model.eval()
     model.to(device)
     ids = tokenizer.encode(prompt, add_bos=True)
     idx = torch.tensor([ids], dtype=torch.long, device=device)
-    eos_id = tokenizer.special_id("eos")
+    stop = set(stop_ids) if stop_ids is not None else {tokenizer.special_id("eos")}
     generated = []
 
     past = None
@@ -62,7 +66,7 @@ def generate(model, tokenizer, prompt: str, max_new_tokens: int = 128,
         _apply_repetition_penalty(step_logits, ids + generated, repetition_penalty)
         nxt = sample_logits(step_logits, temperature, top_k, top_p, generator)
         tid = int(nxt.item())
-        if tid == eos_id:
+        if tid in stop:
             break
         generated.append(tid)
         idx = torch.cat([idx, nxt.view(1, 1).to(device)], dim=1)
