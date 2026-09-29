@@ -80,7 +80,7 @@ def test_grid_element_level_and_pooling():
     name = "blocks.0.attn.q_proj.weight"
     g = store.grid(name, tiles=64)
     assert g["grid"] == [32, 32]
-    assert abs(g["values"][0][0] - float(_tensor(model, name)[0, 0])) < 1e-6
+    assert abs(g["values"][0][0] - float(_tensor(model, name)[0, 0].detach())) < 1e-6
     p = store.grid(name, tiles=8)
     assert p["grid"] == [8, 8]
 
@@ -90,7 +90,7 @@ def test_cell_patch_stats_png():
     store = MatrixStore(model)
     name = "blocks.0.mlp.w1.weight"     # [d_ff, d_model] = [64, 32]
     w = _tensor(model, name)
-    assert abs(store.cell(name, 1, 2) - float(w[1, 2])) < 1e-6
+    assert abs(store.cell(name, 1, 2) - float(w[1, 2].detach())) < 1e-6
     patch = store.patch(name, 0, 0, 4, 5)
     assert patch["h"] == 4 and patch["w"] == 5 and len(patch["values"]) == 4
     st = store.stats(name)
