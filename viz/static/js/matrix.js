@@ -6,6 +6,26 @@ const loader = new THREE.TextureLoader();
 
 const HEIGHT = 0.9;
 
+export function uvToCell(uv, shape) {
+  const [o, i] = shape;
+  const u = Math.min(0.999999, Math.max(0, uv.x));
+  const v = Math.min(0.999999, Math.max(0, uv.y));
+  const c = Math.floor(u * i);
+  const r = Math.floor((1 - v) * o);
+  return { i: r, j: c };
+}
+
+export function cellFromIntersection(hit) {
+  const obj = hit.object;
+  if (obj.isInstancedMesh) {
+    const dims = obj.userData.gridDims || [1, 1];
+    const cols = Math.max(dims[1], 1);
+    const k = hit.instanceId ?? 0;
+    return { i: Math.floor(k / cols), j: k % cols };
+  }
+  return uvToCell(hit.uv, obj.userData.shape);
+}
+
 export function buildPlane(spec, source = 'live', tiles = 64, height = HEIGHT) {
   const geo = new THREE.PlaneGeometry(height, height);
   const tex = loader.load(matrixPngUrl(spec.name, source, tiles, 'global'));
@@ -48,6 +68,12 @@ export async function buildCubes(spec, source = 'live', height = HEIGHT) {
   }
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.userData = { kind: 'matrix', name: spec.name, spec, shape: spec.shape };
+  mesh.userData = {
+    kind: 'matrix',
+    name: spec.name,
+    spec,
+    shape: spec.shape,
+    gridDims: [rows, cols],
+  };
   return mesh;
 }

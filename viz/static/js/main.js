@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { getModel } from './api.js';
+import { getModel, getCell } from './api.js';
 import { Shelf } from './shelf.js';
+import { cellFromIntersection } from './matrix.js';
 
 export const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070a12);
@@ -30,20 +31,71 @@ try {
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
+const hoverEl = document.getElementById('hover');
 let pointerDown = null;
+let hoverTimer = null;
+let hoverSeq = 0;
+
+function setPointer(e) {
+  pointer.x = (e.clientX / innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+}
+
+function visibleMatrices() {
+  return shelf.meshes.filter(
+    (m) => m.userData && m.userData.kind === 'matrix' && m.visible
+  );
+}
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!shelf || !hoverEl) return;
+  setPointer(e);
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(visibleMatrices(), false);
+  if (!hits.length) {
+    if (hoverTimer) clearTimeout(hoverTimer);
+    hoverTimer = null;
+    hoverSeq += 1;
+    hoverEl.textContent = '';
+    return;
+  }
+  const hit = hits[0];
+  const { i, j } = cellFromIntersection(hit);
+  const name = hit.object.userData.name;
+  if (hoverTimer) clearTimeout(hoverTimer);
+  const seq = ++hoverSeq;
+  hoverTimer = setTimeout(async () => {
+    hoverTimer = null;
+    try {
+      const cell = await getCell(name, i, j, SOURCE);
+      if (seq !== hoverSeq) return;
+      hoverEl.textContent = `i=${i} j=${j} value=${cell.value}`;
+    } catch (err) {
+      if (seq === hoverSeq) hoverEl.textContent = `i=${i} j=${j} value=?`;
+    }
+  }, 120);
+});
+
 renderer.domElement.addEventListener('pointerdown', (e) => {
   pointerDown = { x: e.clientX, y: e.clientY };
 });
+
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (!shelf || !pointerDown) return;
   const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
   pointerDown = null;
   if (moved > 5) return;
-  pointer.x = (e.clientX / innerWidth) * 2 - 1;
-  pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+  setPointer(e);
   raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObjects(shelf.pickables(), false);
-  if (hits.length) shelf.expand(hits[0].object.userData.layerId).catch(console.error);
+  const candidates = shelf.meshes.filter((m) => m.visible);
+  const hits = raycaster.intersectObjects(candidates, false);
+  if (!hits.length) return;
+  const ud = hits[0].object.userData || {};
+  if (ud.kind === 'matrix') {
+    window.__panel?.show?.(ud.spec, SOURCE);
+  } else if (ud.role === 'slab') {
+    shelf.expand(ud.layerId).catch(console.error);
+  }
 });
 
 function resize() {
