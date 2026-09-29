@@ -215,3 +215,65 @@ class VLMTrainer(Trainer):
                                     batch["pixel_values"].to(self.device),
                                     batch["labels"].to(self.device))
         return loss
+
+
+class SFTTrainer(Trainer):
+    """指令微调训练器：文本序列 + label 掩码（只监督助手），复用 Trainer 的优化/日志/续训。
+
+    教学注释：与 VLMTrainer 一样，只覆写"怎么取一批数据"和"怎么算 loss"两个接缝，
+    训练循环完全复用基类——这就是把数据形态与训练循环解耦的价值。
+    """
+
+    def __init__(self, model, train_cfg, train_ds, tokenizer, max_len: int = 2048,
+                 val_ds=None, device: str | None = None):
+        from torch.utils.data import DataLoader
+
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.pad_id = tokenizer.special_id("pad")
+        self.train_loader = DataLoader(
+            train_ds, batch_size=train_cfg.batch_size, shuffle=True, drop_last=True,
+            collate_fn=self._collate, num_workers=0,
+        )
+        self.val_loader = None
+        if val_ds is not None and len(val_ds) > 0:
+            self.val_loader = DataLoader(
+                val_ds, batch_size=train_cfg.batch_size, shuffle=False, drop_last=False,
+                collate_fn=self._collate, num_workers=0,
+            )
+        self._iter = None
+        super().__init__(model, train_cfg, None, None, tokenizer=tokenizer, device=device)
+
+    def _collate(self, batch):
+        from src.sft_data import collate_sft
+        return collate_sft(batch, self.pad_id, self.max_len)
+
+    def _next_batch(self):
+        if self._iter is None:
+            self._iter = iter(self.train_loader)
+        try:
+            return next(self._iter)
+        except StopIteration:
+            self._iter = iter(self.train_loader)
+            return next(self._iter)
+
+    def _forward_loss(self, batch):
+        with _autocast_ctx(self.cfg, self.device):
+            _, loss, _ = self.model(batch["input_ids"].to(self.device),
+                                    targets=batch["labels"].to(self.device))
+        self._last_loss = loss.item()
+        return loss
+
+    @torch.no_grad()
+    def _estimate_val(self) -> float:
+        if self.val_loader is None:
+            return self._forward_loss(self._next_batch()).item()
+        self.model.eval()
+        losses = []
+        for b in self.val_loader:
+            with _autocast_ctx(self.cfg, self.device):
+                _, loss, _ = self.model(b["input_ids"].to(self.device),
+                                        targets=b["labels"].to(self.device))
+            losses.append(loss.item())
+        self.model.train()
+        return sum(losses) / max(1, len(losses))
