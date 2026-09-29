@@ -3,6 +3,9 @@ import torch
 from src.config import ModelConfig
 from src.model import GPT
 from viz.maps import SEQUENTIAL_HI, SEQUENTIAL_LO, matrix_map, pool_map, sequential_rgb
+from viz.maps import GradCache
+from viz.stats import snapshot_gradients
+from viz.graph import build_graph
 
 
 def _model(vocab=64, d=32, layers=2, ctx=16):
@@ -38,3 +41,31 @@ def test_sequential_rgb_monotonic_and_bounds():
     assert sequential_rgb(0.5)[0] > sequential_rgb(0.2)[0]
     for c in (*sequential_rgb(-3.0), *sequential_rgb(9.0)):
         assert 0.0 <= c <= 1.0
+
+
+def _with_grads(m):
+    x = torch.randint(0, 64, (2, 8))
+    _, loss, _ = m(x, targets=x)
+    loss.backward()
+    return m
+
+
+def test_snapshot_gradients_keys_and_nonneg():
+    m = _with_grads(_model())
+    g = build_graph(m)
+    snap = snapshot_gradients(m, g["matrices"])
+    q = snap["blocks.0.attn.q_proj.weight"]
+    assert set(q) == {"grad_norm", "grad_absmean", "grad_absmax"}
+    assert q["grad_norm"] >= 0 and q["grad_absmax"] >= 0
+
+
+def test_grad_cache_grid_and_absmax():
+    m = _with_grads(_model())
+    g = build_graph(m)
+    cache = GradCache(tiles=8)
+    cache.capture(m, g["matrices"], step=3)
+    assert cache.step == 3 and cache.absmax > 0
+    grid = cache.grid("blocks.0.attn.q_proj.weight")
+    assert grid is not None and len(grid) <= 8 and len(grid[0]) <= 8
+    assert cache.stats("blocks.0.attn.q_proj.weight")["grad_norm"] >= 0
+    assert cache.grid("nope") is None

@@ -134,3 +134,21 @@ def snapshot_matrices(model: nn.Module, matrices: list[dict],
             s["delta"] = tracker.delta([name], params)
         out[name] = s
     return out
+
+
+def snapshot_gradients(model: nn.Module, matrices: list[dict]) -> dict:
+    """按矩阵聚合梯度标量（无梯度记 0）。梯度必须在 backward 之后、zero_grad 之前取。"""
+    grads = {n: p.grad for n, p in model.named_parameters(remove_duplicate=False)}
+    out: dict[str, dict] = {}
+    for m in matrices:
+        g = grads.get(m["name"])
+        if g is None:
+            out[m["name"]] = {"grad_norm": 0.0, "grad_absmean": 0.0, "grad_absmax": 0.0}
+            continue
+        gf = g.detach().float()
+        out[m["name"]] = {
+            "grad_norm": _finite(float(gf.pow(2).sum()) ** 0.5),
+            "grad_absmean": _finite(float(gf.abs().mean())),
+            "grad_absmax": _finite(float(gf.abs().max())),
+        }
+    return out
