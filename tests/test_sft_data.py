@@ -1,7 +1,18 @@
 import json
 import random
+from collections import Counter
+
 from src.sft_data import (iter_sft_examples, normalize_alpaca, normalize_firefly,
                           synthesize_dialogue)
+
+
+def _write_alpaca(tmp_path, n):
+    path = tmp_path / "pairs.json"
+    path.write_text(
+        json.dumps([{"instruction": f"u{k}", "input": "", "output": f"a{k}"}
+                    for k in range(n)]),
+        encoding="utf-8")
+    return str(path)
 
 
 def test_normalize_alpaca_with_input():
@@ -39,3 +50,27 @@ def test_iter_sft_examples_two_formats(tmp_path):
     got = list(iter_sft_examples([str(alp), str(ff)], synth_prob=0.0))
     assert len(got) == 2
     assert all(len(g["messages"]) == 2 for g in got)
+
+
+def test_iter_sft_examples_deterministic(tmp_path):
+    path = _write_alpaca(tmp_path, 6)
+    first = list(iter_sft_examples([path], synth_prob=1.0, seed=7))
+    second = list(iter_sft_examples([path], synth_prob=1.0, seed=7))
+    assert first == second
+
+
+def test_iter_sft_examples_no_pair_loss(tmp_path):
+    path = _write_alpaca(tmp_path, 6)
+    convs = list(iter_sft_examples([path], synth_prob=1.0, seed=0))
+    assert any(len(c["messages"]) > 2 for c in convs)
+    got = Counter(m["content"] for c in convs for m in c["messages"]
+                  if m["role"] == "user")
+    assert got == Counter(f"u{k}" for k in range(6))
+
+
+def test_iter_sft_examples_alternates_roles(tmp_path):
+    path = _write_alpaca(tmp_path, 6)
+    for conv in iter_sft_examples([path], synth_prob=1.0, seed=3):
+        roles = [m["role"] for m in conv["messages"]]
+        assert roles == ["user", "assistant"] * (len(roles) // 2)
+        assert len(roles) >= 2

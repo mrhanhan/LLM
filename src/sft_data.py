@@ -7,34 +7,38 @@ from pathlib import Path
 from typing import Iterator
 
 
+def _turn(user: str, assistant: str) -> list[dict]:
+    """构造一轮 user/assistant 消息（全局唯一的一处构造点）。"""
+    return [{"role": "user", "content": user},
+            {"role": "assistant", "content": assistant}]
+
+
 def normalize_alpaca(obj: dict) -> dict:
     """alpaca 格式：instruction/input/output -> 单轮 user/assistant。"""
     user = obj["instruction"]
     if obj.get("input"):
         user = f"{user}\n{obj['input']}"
-    return {"messages": [{"role": "user", "content": user},
-                         {"role": "assistant", "content": obj["output"]}]}
+    return {"messages": _turn(user, obj["output"])}
 
 
 def normalize_firefly(obj: dict) -> dict:
     """firefly 格式：input/target -> 单轮 user/assistant（kind 丢弃）。"""
-    return {"messages": [{"role": "user", "content": obj["input"]},
-                         {"role": "assistant", "content": obj["target"]}]}
+    return {"messages": _turn(obj["input"], obj["target"])}
 
 
 def synthesize_dialogue(pairs: list[tuple[str, str]], rng: random.Random,
                         max_turns: int = 3) -> dict:
-    """把若干单轮 (user, assistant) 拼成一段多轮对话。
+    """把给定窗口内的单轮 (user, assistant) 全部拼成一段多轮对话。
 
     教学注释：alpaca/firefly 都是单轮数据，靠拼接让模型见过"多轮"的序列形态。
     这是有意的数据增广，不改变单条样本的语义。
+
+    约定：消费窗口内的**所有** pair（n = min(len(pairs), max_turns)），
+    调用方（iter_sft_examples）据此按窗口长度推进，保证不丢样本。
     """
-    n = min(rng.randint(2, max_turns), len(pairs)) if pairs else 0
-    chosen = rng.sample(pairs, n) if n else []
-    msgs = []
-    for u, a in chosen:
-        msgs.append({"role": "user", "content": u})
-        msgs.append({"role": "assistant", "content": a})
+    n = min(len(pairs), max_turns)
+    chosen = rng.sample(pairs, n)
+    msgs = [m for pair in chosen for m in _turn(*pair)]
     return {"messages": msgs}
 
 
@@ -72,7 +76,5 @@ def iter_sft_examples(paths: list[str], max_items: int | None = None,
             yield synthesize_dialogue(pairs[i:i + k], rng, max_turns=3)
             i += k
         else:
-            u, a = pairs[i]
-            yield {"messages": [{"role": "user", "content": u},
-                                {"role": "assistant", "content": a}]}
+            yield {"messages": _turn(*pairs[i])}
             i += 1
