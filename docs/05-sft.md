@@ -188,6 +188,29 @@ SFT 数据来自两个公开中文数据集（都是**单轮**问答）：
 落盘为 `data/processed/sft/train.npz`（约 115MB）与 `val.npz`（约 2.7MB）。
 npz 里是三个扁平数组：`ids`、`labels`（含 `-100` 掩码）、`offsets`（每条对话的边界）。
 
+### 6.1 ModelScope 数据集（诗词 / AdvertiseGen）
+
+`scripts/prepare_modelscope_data.py` 用 `modelscope` SDK 下载两个 Apache-2.0 数据集，
+同时产出**预训练 .bin**与**SFT .npz**（每个数据集一份，互不混合）：
+
+| 数据集 | repo_id | 预训练 | SFT 任务 |
+|---|---|---|---|
+| 中文诗词集 | `modelscope/chinese-poetry-collection` | 整首 `text1` | 前半 → 后半（在离中点最近的句读处切分，`请补全古诗：…`） |
+| AdvertiseGen | `lvjianjin/AdvertiseGen` | `商品信息：…\n广告文案：…` | `商品信息：\n<kv>\n请写一段广告文案：` → `summary` |
+
+```powershell
+# 两个数据集：预训练 bin + SFT npz
+& ".venv\Scripts\python.exe" scripts/prepare_modelscope_data.py --dataset all
+# 只要预训练 bin / 只要 SFT
+& ".venv\Scripts\python.exe" scripts/prepare_modelscope_data.py --dataset poetry --skip_sft
+& ".venv\Scripts\python.exe" scripts/prepare_modelscope_data.py --dataset advertise --skip_bin
+```
+
+产物（本机实测）：`data/processed/text/{poetry,advertise}.train.bin` 与 `.val.bin`
+（约 14.0M / 10.2M train tokens），`data/processed/sft/{poetry,advertise}.train.npz`
+与 `.val.npz`（约 38.4 万 / 9.65 万条 SFT）。
+
+
 ---
 
 ## 7. SFT 训练与 loss 曲线

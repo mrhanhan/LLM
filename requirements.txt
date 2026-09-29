@@ -3,6 +3,7 @@ numpy
 PyYAML
 pillow
 huggingface_hub
+modelscope
 pyarrow
 aiohttp
 fsspec
@@ -11,3 +12,6 @@ regex
 matplotlib
 pytest
 gradio
+fastapi
+uvicorn
+websockets

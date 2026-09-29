@@ -125,6 +125,109 @@ def get_batch(data, batch_size: int, ctx_len: int, device: str, generator=None):
 
 
 # ---------------------------------------------------------------------------
+# ModelScope 数据集：中文诗词集 + AdvertiseGen
+# ---------------------------------------------------------------------------
+MODELSCOPE_DATASETS = {
+    "poetry": {
+        "repo_id": "modelscope/chinese-poetry-collection",
+        "texts": {"train": "train.csv", "val": "test.csv"},
+    },
+    "advertise": {
+        "repo_id": "lvjianjin/AdvertiseGen",
+        "texts": {"train": "train.csv", "val": "dev.csv"},
+    },
+}
+
+_SENT_END = "，。！？；"
+
+
+def download_modelscope_dataset(repo_id: str, dest_dir: str,
+                                revision: str = "master") -> str:
+    """用 modelscope SDK 下载数据集仓库到 dest_dir（已有 train.csv 则直接复用）。"""
+    root = Path(dest_dir)
+    if (root / "train.csv").exists():
+        return str(root)
+    try:
+        from modelscope.hub.snapshot_download import snapshot_download
+    except ImportError:
+        from modelscope import snapshot_download
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        snapshot_download(repo_id=repo_id, revision=revision, local_dir=str(root),
+                          repo_type="dataset")
+    except TypeError:
+        snapshot_download(repo_id=repo_id, revision=revision, local_dir=str(root))
+    return str(root)
+
+
+def _iter_csv(path: str) -> Iterator[dict]:
+    import csv
+
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        yield from csv.DictReader(f)
+
+
+def iter_poetry_texts(path: str) -> Iterator[str]:
+    """诗词集：单列 text1（整首诗词）。"""
+    for row in _iter_csv(path):
+        text = (row.get("text1") or "").strip()
+        if text:
+            yield text
+
+
+def iter_advertise_texts(path: str) -> Iterator[str]:
+    """AdvertiseGen：把商品 kv 与文案拼成一段文本（供预训练）。"""
+    for row in _iter_csv(path):
+        content = (row.get("content") or "").strip()
+        summary = (row.get("summary") or "").strip()
+        if content and summary:
+            yield f"商品信息：{content}\n广告文案：{summary}"
+
+
+def split_poem(text: str) -> tuple[str, str] | None:
+    """在离中点最近的句读处切分，返回 (前半, 后半)；无法切分返回 None。"""
+    positions = [i + 1 for i, ch in enumerate(text) if ch in _SENT_END]
+    if not positions:
+        return None
+    mid = len(text) / 2
+    cut = min(positions, key=lambda p: abs(p - mid))
+    front, back = text[:cut].strip(), text[cut:].strip()
+    if len(front) < 2 or len(back) < 2:
+        return None
+    return front, back
+
+
+def iter_poetry_sft(path: str, max_items: int | None = None) -> Iterator[dict]:
+    """诗词 SFT：前半 → 后半（续写）。"""
+    for i, text in enumerate(iter_poetry_texts(path)):
+        if max_items is not None and i >= max_items:
+            break
+        parts = split_poem(text)
+        if not parts:
+            continue
+        front, back = parts
+        yield {"messages": [
+            {"role": "user", "content": f"请补全古诗：{front}"},
+            {"role": "assistant", "content": back},
+        ]}
+
+
+def iter_advertise_sft(path: str, max_items: int | None = None) -> Iterator[dict]:
+    """AdvertiseGen SFT：商品信息 → 广告文案。"""
+    for i, row in enumerate(_iter_csv(path)):
+        if max_items is not None and i >= max_items:
+            break
+        content = (row.get("content") or "").strip()
+        summary = (row.get("summary") or "").strip()
+        if not content or not summary:
+            continue
+        yield {"messages": [
+            {"role": "user", "content": f"商品信息：\n{content}\n请写一段广告文案："},
+            {"role": "assistant", "content": summary},
+        ]}
+
+
+# ---------------------------------------------------------------------------
 # 视觉部分：合成图文数据 + 图像工具
 # ---------------------------------------------------------------------------
 COLORS = {"红色": (220, 40, 40), "绿色": (40, 200, 80), "蓝色": (50, 90, 230), "黄色": (240, 210, 50)}
