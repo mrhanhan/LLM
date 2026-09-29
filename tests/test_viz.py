@@ -4,6 +4,7 @@ import torch
 from src.config import ModelConfig
 from src.model import GPT
 from viz.graph import build_graph, CUBE_THRESHOLD
+from viz.neurons import neuron_cloud
 from viz.runtime import CharTokenizer, CORPUS
 from viz.stats import ActivationRecorder, WeightTracker, snapshot_matrices, summarize
 
@@ -48,3 +49,11 @@ def test_summarize_and_snapshot_by_matrix():
     snap = snapshot_matrices(model, g["matrices"], tracker=tracker)
     assert snap["tok_emb.weight"]["delta"] > 0
     assert snap["tok_emb.weight"]["norm"] > 0
+
+
+def test_neuron_cloud_shapes():
+    w = torch.randn(40, 24)
+    c = neuron_cloud(w, max_nodes=16, top_edges=50)
+    assert len(c["out_coords"]) == 16 and len(c["in_coords"]) == 16
+    assert all(len(p) == 3 for p in c["out_coords"])
+    assert len(c["edges"]) == 50
