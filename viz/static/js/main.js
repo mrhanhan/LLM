@@ -3,6 +3,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { getModel, getCell } from './api.js';
 import { Shelf } from './shelf.js';
 import { cellFromIntersection } from './matrix.js';
+import { Panel } from './panel.js';
+
+const panel = new Panel(document.getElementById('drawer'));
+window.__panel = panel;
 
 export const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070a12);
