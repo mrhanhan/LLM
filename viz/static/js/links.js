@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { divergingRGB } from './colors.js';
 
 const SPINE_COLOR = 0x3b78ff;
 const SPINE_WIDTH = 4.5;
@@ -17,6 +18,24 @@ export function layerOfMatrixName(name) {
   if (name === 'norm_f.weight' || name === 'lm_head.weight') return 'final';
   const m = /^blocks\.(\d+)\./.exec(name);
   return m ? `L${m[1]}` : null;
+}
+
+// 层 id -> 代表矩阵名（用于取该层激活 act）
+export function representativeMatrix(layerId) {
+  if (!layerId) return null;
+  if (layerId === 'emb') return 'tok_emb.weight';
+  if (layerId === 'final') return 'lm_head.weight';
+  const m = /^L(\d+)$/.exec(layerId);
+  return m ? `blocks.${m[1]}.mlp.w3.weight` : null;
+}
+
+function actOf(values, name) {
+  if (!values || !name) return null;
+  const v = values[name];
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const a = v.act;
+  return typeof a === 'number' && Number.isFinite(a) ? a : null;
 }
 
 export class Links {
@@ -135,5 +154,132 @@ export class Links {
       line.material.dispose?.();
     }
     this.lines.length = 0;
+  }
+}
+
+const FLOW_GAP = 1.25;
+const FLOW_WIDTH = 3.4;
+const FLOW_BASE_OPACITY = 0.12;
+const FLOW_BASE_COLOR = 0x3b78ff;
+const FLOW_LERP = 0.15;
+
+// 相邻托盘之间的半透明数据流带：颜色/透明度由各层代表矩阵 act 驱动
+export class Flow {
+  constructor(group, graph, shelf = null) {
+    this.group = group;
+    this.graph = graph || { layers: [] };
+    this.shelf = shelf;
+    this.ribbons = [];
+    this.size = new THREE.Vector2(innerWidth || 1, innerHeight || 1);
+    this._build();
+  }
+
+  _makeRibbon(x, z, y0, y1) {
+    const w = FLOW_WIDTH / 2;
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute(
+      'position',
+      new THREE.BufferAttribute(
+        new Float32Array([x - w, y0, z, x + w, y0, z, x + w, y1, z, x - w, y1, z]),
+        3
+      )
+    );
+    geom.setIndex([0, 1, 2, 0, 2, 3]);
+    geom.computeVertexNormals();
+    return geom;
+  }
+
+  _build() {
+    this.dispose();
+    const layers = this.graph.layers || [];
+    if (layers.length < 2) return;
+    const tmp = new THREE.Vector3();
+    const n = layers.length;
+    const posOf = (id, idx) => {
+      const tray = this.shelf && this.shelf.trays ? this.shelf.trays.get(id) : null;
+      if (tray) {
+        tray.getWorldPosition(tmp);
+        this.group.worldToLocal(tmp);
+        return tmp.clone();
+      }
+      return new THREE.Vector3(0, ((n - 1) / 2 - idx) * FLOW_GAP, 0);
+    };
+    for (let i = 0; i < n - 1; i++) {
+      const a = posOf(layers[i].id, i);
+      const b = posOf(layers[i + 1].id, i + 1);
+      const base = new THREE.Color(FLOW_BASE_COLOR);
+      const mat = new THREE.MeshBasicMaterial({
+        color: base.clone(),
+        transparent: true,
+        opacity: FLOW_BASE_OPACITY,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(this._makeRibbon(a.x, a.z, a.y, b.y), mat);
+      mesh.userData.rep = representativeMatrix(layers[i].id);
+      mesh.userData.baseColor = base;
+      mesh.userData.targetColor = base.clone();
+      mesh.userData.targetOpacity = FLOW_BASE_OPACITY;
+      mesh.userData._act = null;
+      this.group.add(mesh);
+      this.ribbons.push(mesh);
+    }
+  }
+
+  setToken(values) {
+    if (!this.ribbons.length) return;
+    const present = [];
+    for (const rb of this.ribbons) {
+      const v = actOf(values, rb.userData.rep);
+      rb.userData._act = v;
+      if (v != null) present.push(v);
+    }
+    if (!present.length) return;
+    let mn = present[0];
+    let mx = present[0];
+    for (const v of present) {
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    const span = mx - mn;
+    for (const rb of this.ribbons) {
+      const v = rb.userData._act;
+      if (v == null) continue;
+      const t = span < 1e-9 ? 0.5 : (v - mn) / span;
+      const [r, g, b] = divergingRGB(t * 2 - 1);
+      rb.userData.targetColor.setRGB(r, g, b);
+      rb.userData.targetOpacity = 0.18 + 0.62 * t;
+    }
+  }
+
+  // 在主动画循环里调用，向目标颜色/透明度缓动
+  tick() {
+    for (const rb of this.ribbons) {
+      const m = rb.material;
+      const target = rb.userData.targetOpacity ?? FLOW_BASE_OPACITY;
+      m.opacity += (target - m.opacity) * FLOW_LERP;
+      m.color.lerp(rb.userData.targetColor || rb.userData.baseColor, FLOW_LERP);
+    }
+  }
+
+  reset() {
+    for (const rb of this.ribbons) {
+      rb.userData._act = null;
+      rb.userData.targetOpacity = FLOW_BASE_OPACITY;
+      rb.userData.targetColor.copy(rb.userData.baseColor);
+    }
+  }
+
+  resize(w, h) {
+    this.size.set(w || 1, h || 1);
+  }
+
+  dispose() {
+    for (const rb of this.ribbons) {
+      this.group.remove(rb);
+      rb.geometry.dispose?.();
+      rb.material.dispose?.();
+    }
+    this.ribbons.length = 0;
   }
 }

@@ -58,6 +58,10 @@ html, body { margin: 0; height: 100%; overflow: hidden;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #loss { width: 240px; height: 48px; border-radius: 6px; background: #0a1020;
   border: 1px solid var(--border); }
+#attn { width: 240px; height: 48px; border-radius: 6px; background: #0a1020;
+  border: 1px solid var(--border); }
+#prompt-input { width: 130px; padding: 5px 8px; border-radius: 8px; font-size: 12px;
+  background: #0b1226; color: var(--text); border: 1px solid #243454; }
 #hover { flex: 1; text-align: right; color: var(--muted-2); font-size: 12px;
   font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { getModel, getCell } from './api.js';
+import { getModel, getCell, connectWS } from './api.js';
 import { Shelf } from './shelf.js';
-import { Links } from './links.js';
+import { Links, Flow } from './links.js';
 import { cellFromIntersection } from './matrix.js';
 import { Panel } from './panel.js';
 import { showCloud, resizeCloud, disposeCloud } from './cloud.js';
@@ -27,6 +27,9 @@ scene.add(modelGroup);
 
 const cloudGroup = new THREE.Group();
 scene.add(cloudGroup);
+
+const flowGroup = new THREE.Group();
+scene.add(flowGroup);
 
 const CLOUD_BTN_STYLE =
   'margin-top:10px;padding:5px 12px;border-radius:8px;cursor:pointer;' +
@@ -100,7 +103,9 @@ function mountCloudControl(spec) {
 
 let shelf = null;
 let links = null;
+let flow = null;
 window.__links = null;
+window.__flow = null;
 const SOURCE = 'live';
 try {
   const graph = await getModel(SOURCE);
@@ -110,9 +115,74 @@ try {
   links.resizeLinks(innerWidth, innerHeight);
   links.rebuild(shelf);
   window.__links = links;
+  flow = new Flow(flowGroup, graph, shelf);
+  window.__flow = flow;
 } catch (e) {
   console.error('加载模型图失败', e);
 }
+
+// ---------------------------------------------------------------------------
+// 推理播放器：▶/⏭ 触发 /api/infer，WS token 消息驱动流带/注意力/文本
+// ---------------------------------------------------------------------------
+const playerEl = document.getElementById('player');
+const promptEl = document.getElementById('prompt');
+let promptInput = document.getElementById('prompt-input');
+if (playerEl && !promptInput) {
+  promptInput = document.createElement('input');
+  promptInput.id = 'prompt-input';
+  promptInput.type = 'text';
+  promptInput.value = '人工智能';
+  promptInput.style.width = '130px';
+  playerEl.insertBefore(promptInput, document.getElementById('btn-step'));
+}
+
+const attnCanvas = document.getElementById('attn') || document.getElementById('loss');
+
+function clearAttn() {
+  if (!attnCanvas) return;
+  const ctx = attnCanvas.getContext('2d');
+  ctx.clearRect(0, 0, attnCanvas.width, attnCanvas.height);
+}
+
+function drawAttn(attn) {
+  if (!attnCanvas) return;
+  const ctx = attnCanvas.getContext('2d');
+  const w = attnCanvas.width;
+  const h = attnCanvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0a1020';
+  ctx.fillRect(0, 0, w, h);
+  if (!attn || !attn.length) return;
+  const bw = w / attn.length;
+  for (let i = 0; i < attn.length; i++) {
+    const v = Math.max(0, Math.min(1, Number(attn[i]) || 0));
+    const bh = v * (h - 4);
+    ctx.fillStyle = `rgb(${Math.round(80 + 150 * v)},${Math.round(140 + 70 * v)},${Math.round(220 - 60 * v)})`;
+    ctx.fillRect(i * bw + 0.5, h - bh, Math.max(1, bw - 1), bh);
+  }
+}
+
+function runInfer(maxNewTokens) {
+  const prompt = (promptInput && promptInput.value.trim()) || '人工智能';
+  flow?.reset();
+  clearAttn();
+  return fetch('/api/infer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: SOURCE, prompt, max_new_tokens: maxNewTokens }),
+  }).catch((e) => console.error('推理请求失败', e));
+}
+
+document.getElementById('btn-play')?.addEventListener('click', () => runInfer(40));
+document.getElementById('btn-step')?.addEventListener('click', () => runInfer(1));
+
+connectWS((m) => {
+  if (!m || m.type !== 'token') return;
+  if (promptEl) promptEl.textContent = m.text ?? '';
+  flow?.setToken(m.values);
+  links?.update(m.values);
+  drawAttn(m.attn);
+});
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -189,6 +259,7 @@ function resize() {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   resizeCloud(innerWidth, innerHeight);
   links?.resizeLinks(innerWidth, innerHeight);
+  flow?.resize(innerWidth, innerHeight);
 }
 addEventListener('resize', resize); resize();
 
@@ -206,6 +277,7 @@ function tick() {
   requestAnimationFrame(tick);
   controls.update();
   lerpTrays();
+  flow?.tick();
   renderer.render(scene, camera);
 }
 tick();
