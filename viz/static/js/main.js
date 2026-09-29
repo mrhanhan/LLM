@@ -27,6 +27,7 @@ scene.add(modelGroup);
 
 const cloudGroup = new THREE.Group();
 scene.add(cloudGroup);
+panel.cloudGroup = cloudGroup;
 
 const flowGroup = new THREE.Group();
 scene.add(flowGroup);

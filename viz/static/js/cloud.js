@@ -8,6 +8,7 @@ const BUCKET_WIDTHS = [1, 2, 4, 7];
 const POS_COLOR = [1.0, 0.45, 0.2];
 const NEG_COLOR = [0.25, 0.6, 1.0];
 const LINE_OPACITY = 0.5;
+const LINK_OPACITY = 0.6;
 
 const lineMats = [];
 
@@ -58,7 +59,7 @@ function cluster(points, cx) {
   );
 }
 
-function buildEdges(group, edges, inPts, outPts) {
+function buildEdges(group, edges, inPts, outPts, opacity = LINE_OPACITY) {
   if (!edges || !edges.length) return;
   let maxAbs = 0;
   for (const e of edges) {
@@ -86,7 +87,7 @@ function buildEdges(group, edges, inPts, outPts) {
       vertexColors: true,
       linewidth: BUCKET_WIDTHS[i],
       worldUnits: false,
-      opacity: LINE_OPACITY,
+      opacity,
       transparent: true,
     });
     mat.resolution.set(innerWidth, innerHeight);
@@ -120,5 +121,15 @@ export async function showCloud(group, matrix, source = 'live', n = 160, isStale
   const outPts = merge(data.out_coords || [], data.out_norm || []);
   group.add(cluster(inPts, -2.8), cluster(outPts, 2.8));
   buildEdges(group, data.edges, inPts, outPts);
+  return true;
+}
+
+export async function showNeuronLinks(group, matrix, source = 'live', top = 800) {
+  const data = await getNeurons(modulePath(matrix), source, 160, top);
+  if (data.error) throw new Error(data.error);
+  disposeCloud(group);
+  const inPts = merge(data.in_coords || [], data.in_norm || []);
+  const outPts = merge(data.out_coords || [], data.out_norm || []);
+  buildEdges(group, data.edges, inPts, outPts, LINK_OPACITY);
   return true;
 }

@@ -1,5 +1,6 @@
 import { getGrid, getStats } from './api.js';
 import { divergingRGB } from './colors.js';
+import { showNeuronLinks, disposeCloud } from './cloud.js';
 
 const BASE_BTN =
   'padding:5px 12px;border-radius:8px;cursor:pointer;font-size:12px;' +
@@ -31,6 +32,9 @@ export class Panel {
     this.tiles = 192;
     this.seq = 0;
     this.built = false;
+    this.cloudGroup = null;
+    this.linksOn = false;
+    this.linkSeq = 0;
   }
 
   _ensure() {
@@ -93,9 +97,58 @@ export class Panel {
     closeBtn.onclick = () => this.close();
     controls.append(this.defaultBtn, this.blockBtn, this.elementBtn, closeBtn);
 
-    body.append(title, this.metaEl, wrap, legend, controls);
+    this.linkRow = document.createElement('div');
+    this.linkRow.style.cssText = 'display:flex;margin-top:8px;';
+    this.linkBtn = document.createElement('button');
+    this.linkBtn.textContent = '神经元连线';
+    this.linkBtn.style.cssText = BASE_BTN;
+    this.linkBtn.onclick = () => this._toggleNeuronLinks();
+    this.linkRow.append(this.linkBtn);
+
+    body.append(title, this.metaEl, wrap, legend, controls, this.linkRow);
     this._setActive();
     this.built = true;
+  }
+
+  _refreshLinkBtn() {
+    if (!this.linkBtn) return;
+    this.linkBtn.style.cssText = this.linksOn ? ACTIVE_BTN : BASE_BTN;
+    this.linkBtn.textContent = this.linksOn ? '关闭神经元连线' : '神经元连线';
+  }
+
+  async _toggleNeuronLinks() {
+    if (!this.spec || this.spec.small !== true || !this.cloudGroup) return;
+    const group = this.cloudGroup;
+    if (this.linksOn) {
+      this.linksOn = false;
+      this.linkSeq += 1;
+      disposeCloud(group);
+      this._refreshLinkBtn();
+      return;
+    }
+    this.linksOn = true;
+    const mySeq = ++this.linkSeq;
+    const btn = this.linkBtn;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '加载中…';
+    }
+    try {
+      await showNeuronLinks(group, this.spec.name, this.source, 800);
+      if (mySeq !== this.linkSeq) {
+        disposeCloud(group);
+        return;
+      }
+    } catch (e) {
+      if (mySeq !== this.linkSeq) return;
+      this.linksOn = false;
+      console.error('神经元连线加载失败', e);
+    } finally {
+      if (mySeq === this.linkSeq && btn) {
+        btn.disabled = false;
+        this._refreshLinkBtn();
+      }
+    }
   }
 
   _setActive() {
@@ -118,6 +171,10 @@ export class Panel {
     this._ensure();
     this.tiles = 192;
     this._setActive();
+    this.linksOn = false;
+    this.linkSeq += 1;
+    this._refreshLinkBtn();
+    if (this.linkRow) this.linkRow.style.display = spec.small ? 'flex' : 'none';
     this.nameEl.textContent = spec.name || '';
     this.labelEl.textContent = spec.label || '';
     const [o, i] = spec.shape || [];
