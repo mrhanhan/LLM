@@ -78,6 +78,9 @@ export class Panel {
 
     const controls = document.createElement('div');
     controls.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    this.defaultBtn = document.createElement('button');
+    this.defaultBtn.textContent = '适配';
+    this.defaultBtn.onclick = () => this._select(192);
     this.blockBtn = document.createElement('button');
     this.blockBtn.textContent = '块';
     this.blockBtn.onclick = () => this._select(64);
@@ -88,7 +91,7 @@ export class Panel {
     closeBtn.textContent = '关闭';
     closeBtn.style.cssText = BASE_BTN + 'margin-left:auto;';
     closeBtn.onclick = () => this.close();
-    controls.append(this.blockBtn, this.elementBtn, closeBtn);
+    controls.append(this.defaultBtn, this.blockBtn, this.elementBtn, closeBtn);
 
     body.append(title, this.metaEl, wrap, legend, controls);
     this._setActive();
@@ -96,6 +99,7 @@ export class Panel {
   }
 
   _setActive() {
+    this.defaultBtn.style.cssText = this.tiles === 192 ? ACTIVE_BTN : BASE_BTN;
     this.blockBtn.style.cssText = this.tiles === 64 ? ACTIVE_BTN : BASE_BTN;
     this.elementBtn.style.cssText = this.tiles === 256 ? ACTIVE_BTN : BASE_BTN;
   }
@@ -135,8 +139,24 @@ export class Panel {
       this._renderHeat(grid.values, stats.absmax || 1);
       this._drawLegend(stats);
     } catch (e) {
-      if (seq === this.seq) console.error('加载矩阵失败', name, e);
+      if (seq !== this.seq) return;
+      console.error('加载矩阵失败', name, e);
+      this._clear('加载失败');
     }
+  }
+
+  _clear(message) {
+    const cv = this.canvas;
+    if (cv.getContext) {
+      cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+    }
+    if (this.legendCv && this.legendCv.getContext) {
+      this.legendCv.getContext('2d').clearRect(
+        0, 0, this.legendCv.width, this.legendCv.height
+      );
+    }
+    if (this.vminEl) this.vminEl.textContent = message || '';
+    if (this.vmaxEl) this.vmaxEl.textContent = '';
   }
 
   _renderHeat(values, absmax) {
