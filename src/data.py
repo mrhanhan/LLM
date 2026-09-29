@@ -1,16 +1,12 @@
-"""数据下载与预处理：全部落到 data/ 分层目录，走 hf-mirror。"""
+"""数据下载与预处理：全部落到 data/ 分层目录。"""
 from __future__ import annotations
 
 import json
-import os
 import tarfile
 from pathlib import Path
 from typing import Iterator
 
 from torch.utils.data import Dataset
-
-# 教学注释：强制把下载端点指向国内镜像，避免超时。
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 _TOKENIZER_FILES = [
     "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt",

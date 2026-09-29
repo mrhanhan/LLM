@@ -50,6 +50,12 @@ class DataConfig:
     tokenizer_dir: str = "data/tokenizer/qwen2.5-0.5b"
     train_bin: str = "data/processed/text/train.bin"
     val_bin: str = "data/processed/text/val.bin"
+    # 教学注释：HF 访问方式与 SFT 数据路径，配合本阶段新增脚本使用。
+    hf_endpoint: str = ""                              # 空 = 直连 HF
+    proxy: str = "http://127.0.0.1:7890"               # 本机代理
+    sft_train: str = "data/processed/sft/train.npz"
+    sft_val: str = "data/processed/sft/val.npz"
+    max_len: int = 2048                                # SFT 序列最大长度
 
 
 @dataclass
