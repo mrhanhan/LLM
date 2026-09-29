@@ -8,7 +8,7 @@
 - 后端：`viz/server.py`（FastAPI + WebSocket）
 - 数据层：`viz/graph.py`（统一模型图）、`viz/weights.py`（权重网格 / 纹理 / 元素查询）
 - 统计：`viz/stats.py`（权重统计、更新幅度、激活 hook）、`viz/neurons.py`（神经元点云 PCA）
-- 运行时：`viz/runtime.py`（小字符级 GPT、实时训练线程、逐 token 推理）
+- 运行时：`viz/runtime.py`（tiny GPT + 内置语料、逐 token 推理）、`viz/datasets.py`（数据集注册表）、`viz/train_engine.py`（simple / hifi 训练引擎）
 - 架构：`viz/arch.py` + `viz/architectures/*.json`
 - 前端：`viz/static/`（`index.html` + `style.css` + `js/{main,shelf,matrix,links,panel,cloud,colors,api,arch,kv,toplabels}.js` + vendored Three.js/KaTeX）
 
@@ -18,7 +18,7 @@
 ## 1. 启动
 
 ```powershell
-# 默认进入「实时训练」：内置字符级小模型（d_model=64 / 4 层），几秒即可看到权重变化
+# 默认进入「实时训练」：内置 tiny 小模型（d_model=64 / 4 层，Qwen 词表），几秒即可看到权重变化
 & ".venv\Scripts\python.exe" viz/server.py
 # 浏览器打开 http://127.0.0.1:7861
 ```
@@ -43,7 +43,7 @@
 | 模式 | 数据源 | 说明 |
 |---|---|---|
 | **真实模型检视** | 本地 checkpoint（`--ckpt`） | 静态权重网格 + 逐 token 推理流动，主力视图 |
-| **实时训练** | 内置小模型 / `--ckpt` 192M / 随机初始化 192M | 实时权重变化、loss 曲线与 L3 流带；训练目标由左栏下拉选择 |
+| **实时训练** | 内置 tiny / `--ckpt` 192M / 随机初始化 192M | 实时权重变化、loss 曲线与 L3 流带；训练目标、数据集、超参与引擎由左栏选择（见 3.9） |
 | **架构浏览器** | `viz/architectures/*.json` | `viz/architectures/` 下的全部真实模型规格（当前 17 个）的**仅结构 / 公式 / 源码**（无权重） |
 
 > 未用 `--ckpt` 启动时，服务端 `has_ckpt=false`，前端会自动禁用顶栏「真实模型检视」
@@ -132,14 +132,14 @@
 - 点「开始训练」→ 后端线程按间隔把每个矩阵的
   `norm / mean / max / delta`（delta = 相对上一步的更新幅度）经 WebSocket 的
   `tick` 推给前端；前端刷新矩阵板颜色 / 自发光与连线粗细，并滚动 **loss 曲线**。
-- **训练目标可选**（左栏下拉，`POST /api/train/start {target}`）：
-  - `live`：内置字符级小模型（d_model=64 / 4 层），几秒见效；
+- **训练目标可选**（左栏「模型」下拉）：
+  - `live`：内置 tiny 小模型（d_model=64 / 4 层，Qwen 词表），几秒见效；
   - `ckpt`：在 `--ckpt` 加载的 **192M** 权重上继续微调（与「真实模型检视」共享同一模型，
     训练能直接改变所见权重）；
   - `scratch`：按 `configs/gpt_tinystories.yaml` 的 `model` 段随机初始化一个同结构
     **192M** 模型从头训练。
-  `ckpt` / `scratch` 使用 Qwen 分词器与 `data.processed/text/train.bin` 数据，
-  lr / weight_decay / grad_clip 取自 config 的 `train` 段；有 GPU 时自动用 cuda。
+  `ckpt` / `scratch` 使用 Qwen 分词器；训练数据由左栏数据集下拉选择（见 3.9），
+  超参取自左栏；有 GPU 时自动用 cuda。
 - **训练一启动即可见**：折叠状态下每块**层薄板**按其**层内矩阵聚合**的 norm / delta
   持续变色（不必先点开某层）；首个 `tick` 还会**自动展开当前变化最大的一层**，
   使其矩阵板实时刷新。
@@ -163,6 +163,53 @@ KaTeX 渲染该层公式并附对应源码。数据来自 `viz/architectures/<id
 （参数 / 层数 / 注意力 / MoE / 上下文，可排序过滤）见
 [models/compare.html](models/compare.html)，或在服务里访问 `/compare`。
 
+### 3.9 训练配置
+
+左栏「实时训练」面板可在发起训练前配置：
+
+- **模型**（`train-target`）：`live` 内置 tiny（d_model=64 / 4 层，Qwen 词表）、
+  `ckpt` 在 `--ckpt` 的 192M 权重上继续微调、`scratch` 按 config 随机初始化 192M 从头训练。
+- **训练方式**（`train-mode`）：`pretrain`（next-token）或 `sft`（只监督助手回复）；
+  数据集下拉按方式过滤。
+- **训练数据集**（`train-dataset`）：来自 `GET /api/datasets` 的写死注册表（见下），
+  文件缺失的项标「（文件缺失）」并禁用。
+- **超参**：最大步数 `max_steps`、学习率 `lr`、批大小 `batch_size`、梯度累积 `grad_accum`。
+- **高保真模式**（`hp-hifi`）：勾选用 `hifi` 引擎，否则用 `simple` 引擎。
+
+数据集注册表（`viz/datasets.py` 的 `DATASETS`，写死不扫描目录）：
+
+| id | 标签 | 方式 | 文件 |
+|---|---|---|---|
+| `corpus_qwen` | 内置中文语料（最快） | pretrain | 内置 `viz.runtime.CORPUS`（无文件） |
+| `tiny_stories` | TinyStories | pretrain | `data/processed/text/train.bin` |
+| `poetry` | 中文诗词 | pretrain | `data/processed/text/poetry.train.bin` |
+| `advertise` | AdvertiseGen | pretrain | `data/processed/text/advertise.train.bin` |
+| `fineweb_cmn` | FineWeb 中文（大文件） | pretrain | `data/processed/text/fineweb_cmn.train.bin` |
+| `sft_chat` | Alpaca+Firefly 多轮 | sft | `data/processed/sft/train.npz` |
+| `sft_poetry` | 诗词续写 | sft | `data/processed/sft/poetry.train.npz` |
+| `sft_advertise` | 广告文案 | sft | `data/processed/sft/advertise.train.npz` |
+
+所有数据集都用 **Qwen 分词器**；`corpus_qwen` 是唯一内置项（无需数据文件）。
+
+两种训练引擎（`viz/train_engine.py`）：
+
+- **`simple`**（默认，`SimpleEngine`）：朴素 fp32 循环，可随时中断，逐 step 回调；
+  不启用 bf16，最快看到权重变化。
+- **`hifi`**（`HifiTrainer` / `HifiSFTTrainer`）：复用 `src.trainer.Trainer` / `SFTTrainer`，
+  bf16 + warmup（`warmup_steps = max(1, max_steps // 20)`），通过子类注入 `on_step`
+  回调与可中断线程。192M + `hifi` + 大 SFT 序列可能吃显存，可下调 `--sft-max-len`
+  （默认 256）。
+
+保存：停止训练时把权重存到
+`out/viz/<target>-<mode>-<dataset>-<YYYYmmdd-HHMMSS>.pt`
+（如 `out/viz/live-pretrain-corpus_qwen-20260929-101530.pt`）。
+
+实时刷新分级节流（前端 `main.js`）：
+
+- **3D 主视图每 tick 刷新**：`shelf.updateValues` + `links.update` + loss 曲线；
+- **右抽屉约 500ms 节流**：`panel.refreshLive()`；
+- **展开层纹理每 20 tick 刷新一次**：`shelf.refreshTextures(step)`。
+
 ## 4. HTTP / WebSocket 协议
 
 ### 4.1 HTTP 端点
@@ -179,7 +226,8 @@ KaTeX 渲染该层公式并附对应源码。数据来自 `viz/architectures/<id
 | GET | `/api/neurons?matrix=&source=&n=&top=` | PCA 神经元点云 |
 | GET | `/api/arch/list` · `/api/arch/{id}` | 架构浏览器列表 / 详情 |
 | GET | `/compare` | 模型横向对比页（`docs/models/compare.html`） |
-| POST | `/api/train/start` · `/api/train/stop` | 触发训练；body `{target: live\|ckpt\|scratch}`（默认 live） |
+| GET | `/api/datasets` | 数据集注册表（`{id, label, kind, tokenizer, available, note}`） |
+| POST | `/api/train/start` · `/api/train/stop` | 触发 / 停止训练；start body `{target: live\|ckpt\|scratch, mode: pretrain\|sft, dataset, engine: simple\|hifi, params:{max_steps, lr, batch_size, grad_accum}}`（依次默认 `live` / `pretrain` / `corpus_qwen` / `simple`）；stop 返回保存路径 `{saved}` |
 | POST | `/api/infer` | 触发逐 token 推理，body `{source, prompt, max_new_tokens, temperature, top_k, top_p, top_n, seed}` |
 
 ### 4.2 WebSocket `ws://host/ws`
@@ -187,7 +235,7 @@ KaTeX 渲染该层公式并附对应源码。数据来自 `viz/architectures/<id
 | type | 内容 |
 |---|---|
 | `init` | `{has_ckpt, source}`（轻量握手；完整模型图由前端另行请求 `/api/model?source=`） |
-| `tick` | `{step, loss, lr, target, values:{matrixName:{norm, mean, max, n, delta}}}` |
+| `tick` | `{step, loss, lr, target, mode, dataset, engine, total_steps, values:{matrixName:{norm, mean, max, n, delta}}}` |
 | `token` | `{token, id, text, values:{matrixName:{act}}, attn:[...], topn:[{id,token,prob}], kv:{n_layer,total_len,total_bytes,layers:[{layer,len,bytes,heads,head_dim,k:{rows,cols,values},v:{...}}]}}` |
 | `status` | `{training: bool}` |
 
@@ -200,7 +248,7 @@ KaTeX 渲染该层公式并附对应源码。数据来自 `viz/architectures/<id
 - 小矩阵走 **`InstancedMesh`** 立方块，面积阈值 `cube_threshold=4096`（可配）；
 - 连线只需 `spine`（始终）与展开层的 `inner`；连接用 top-k / LOD 控制；
 - 同一时刻只展开一层，几何量有界；
-- checkpoint **懒加载**，仅检视模式触发；实时训练默认用几十万参数的小模型。
+- checkpoint **懒加载**，仅检视模式触发；实时训练默认用内置 tiny 小模型（约 985 万参数，Qwen 词表）。
 
 ## 6. 相关文档
 
