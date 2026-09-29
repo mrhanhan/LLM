@@ -74,7 +74,7 @@ async function onCloudClick() {
     const rendered = await showCloud(
       cloudGroup,
       cloudMatrix,
-      SOURCE,
+      source,
       160,
       () => mySeq !== cloudSeq
     );
@@ -111,25 +111,166 @@ function mountCloudControl(spec) {
   refreshCloudBtn();
 }
 
+// ---------------------------------------------------------------------------
+// 实时训练：左栏开始/停止，WS tick 驱动权重配色与滚动 loss 曲线
+// ---------------------------------------------------------------------------
+const lossCanvas = document.getElementById('loss');
+const trainStatsEl = document.getElementById('train-stats');
+const startBtn = document.getElementById('btn-train-start');
+const stopBtn = document.getElementById('btn-train-stop');
+const trainPanel = document.getElementById('left');
+const LOSS_MAX = 160;
+const lossHistory = [];
+let training = false;
+
+function drawLoss() {
+  if (!lossCanvas) return;
+  const ctx = lossCanvas.getContext('2d');
+  const w = lossCanvas.width;
+  const h = lossCanvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0a1020';
+  ctx.fillRect(0, 0, w, h);
+  if (lossHistory.length < 2) return;
+  let mn = lossHistory[0];
+  let mx = lossHistory[0];
+  for (const v of lossHistory) {
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  const span = mx - mn;
+  ctx.strokeStyle = '#4f8cff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let k = 0; k < lossHistory.length; k++) {
+    const x = (k / (LOSS_MAX - 1)) * w;
+    const t = span < 1e-9 ? 0.5 : (lossHistory[k] - mn) / span;
+    const y = h - 4 - t * (h - 10);
+    if (k === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function updateTrainStats(step, loss, lr) {
+  if (!trainStatsEl) return;
+  const parts = [];
+  if (step != null) parts.push(`step ${step}`);
+  if (loss != null && Number.isFinite(Number(loss))) {
+    parts.push(`loss ${Number(loss).toFixed(4)}`);
+  }
+  if (lr != null && Number.isFinite(Number(lr))) {
+    parts.push(`lr ${Number(lr).toExponential(1)}`);
+  }
+  trainStatsEl.textContent = parts.length ? parts.join(' · ') : '未开始训练';
+}
+
+function resetLoss() {
+  lossHistory.length = 0;
+  drawLoss();
+  updateTrainStats(null, null, null);
+}
+
+function pushLoss(loss) {
+  const v = Number(loss);
+  if (!Number.isFinite(v)) return;
+  lossHistory.push(v);
+  if (lossHistory.length > LOSS_MAX) lossHistory.shift();
+  drawLoss();
+}
+
+function setTrainPanel(visible) {
+  if (trainPanel) trainPanel.style.display = visible ? 'block' : 'none';
+}
+
+function setTraining(on) {
+  training = !!on;
+  if (startBtn) {
+    startBtn.disabled = training;
+    startBtn.textContent = training ? '训练中…' : '开始训练';
+  }
+  if (stopBtn) stopBtn.disabled = !training;
+}
+
+async function trainStart() {
+  setTraining(true);
+  try {
+    await fetch('/api/train/start', { method: 'POST' });
+  } catch (e) {
+    console.error('开始训练失败', e);
+    setTraining(false);
+  }
+}
+
+async function trainStop() {
+  try {
+    await fetch('/api/train/stop', { method: 'POST' });
+  } catch (e) {
+    console.error('停止训练失败', e);
+  }
+}
+
+startBtn?.addEventListener('click', trainStart);
+stopBtn?.addEventListener('click', trainStop);
+drawLoss();
+
 let shelf = null;
 let links = null;
 let flow = null;
+let source = 'live';
+window.__shelf = null;
 window.__links = null;
 window.__flow = null;
-const SOURCE = 'live';
-try {
-  const graph = await getModel(SOURCE);
-  shelf = new Shelf(modelGroup, graph, SOURCE);
-  window.__shelf = shelf;
-  links = new Links(modelGroup, graph);
-  links.resizeLinks(innerWidth, innerHeight);
-  links.rebuild(shelf);
-  window.__links = links;
-  flow = new Flow(flowGroup, graph, shelf);
-  window.__flow = flow;
-} catch (e) {
-  console.error('加载模型图失败', e);
+
+const badgeModel = document.getElementById('badge-model');
+const badgeDevice = document.getElementById('badge-device');
+
+function fmtCount(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '–';
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  return String(v);
 }
+
+function setBadges(graph) {
+  const model = (graph && graph.model) || {};
+  if (badgeModel) {
+    const label = model.name || (graph && graph.source) || '–';
+    badgeModel.textContent = model.params ? `${label} · ${fmtCount(model.params)}` : label;
+  }
+  if (badgeDevice) badgeDevice.textContent = (graph && graph.device) || '–';
+}
+
+// 切换真实 checkpoint / 实时小模型：重建 Shelf + Links + Flow
+async function reload(src) {
+  const next = src === 'ckpt' ? 'ckpt' : 'live';
+  cloudOff();
+  window.__panel?.close?.();
+  try {
+    const graph = await getModel(next);
+    if (links) links.dispose();
+    if (flow) flow.dispose();
+    modelGroup.clear();
+    flowGroup.clear();
+    source = next;
+    shelf = new Shelf(modelGroup, graph, next);
+    window.__shelf = shelf;
+    links = new Links(modelGroup, graph);
+    links.resizeLinks(innerWidth, innerHeight);
+    links.rebuild(shelf);
+    window.__links = links;
+    flow = new Flow(flowGroup, graph, shelf);
+    window.__flow = flow;
+    setBadges(graph);
+    resetLoss();
+    setTrainPanel(next === 'live');
+  } catch (e) {
+    console.error('加载模型图失败', e);
+  }
+}
+
+await reload('live');
 
 // ---------------------------------------------------------------------------
 // 推理播放器：▶/⏭ 触发 /api/infer，WS token 消息驱动流带/注意力/文本
@@ -179,7 +320,7 @@ function runInfer(maxNewTokens) {
   return fetch('/api/infer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source: SOURCE, prompt, max_new_tokens: maxNewTokens }),
+    body: JSON.stringify({ source: source, prompt, max_new_tokens: maxNewTokens }),
   }).catch((e) => console.error('推理请求失败', e));
 }
 
@@ -187,7 +328,19 @@ document.getElementById('btn-play')?.addEventListener('click', () => runInfer(40
 document.getElementById('btn-step')?.addEventListener('click', () => runInfer(1));
 
 connectWS((m) => {
-  if (!m || m.type !== 'token') return;
+  if (!m) return;
+  if (m.type === 'tick') {
+    shelf?.updateValues(m.values);
+    links?.update(m.values);
+    pushLoss(m.loss);
+    updateTrainStats(m.step, m.loss, m.lr);
+    return;
+  }
+  if (m.type === 'status') {
+    setTraining(!!m.training);
+    return;
+  }
+  if (m.type !== 'token') return;
   if (promptEl) promptEl.textContent = m.text ?? '';
   flow?.setToken(m.values);
   links?.update(m.values);
@@ -232,7 +385,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   hoverTimer = setTimeout(async () => {
     hoverTimer = null;
     try {
-      const cell = await getCell(name, i, j, SOURCE);
+      const cell = await getCell(name, i, j, source);
       if (seq !== hoverSeq) return;
       hoverEl.textContent = `i=${i} j=${j} value=${Number(cell.value).toFixed(4)}`;
     } catch (err) {
@@ -257,7 +410,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   if (!hits.length) return;
   const ud = hits[0].object.userData || {};
   if (ud.kind === 'matrix') {
-    window.__panel?.show?.(ud.spec, SOURCE);
+    window.__panel?.show?.(ud.spec, source);
     mountCloudControl(ud.spec);
   } else if (ud.role === 'slab') {
     shelf.expand(ud.layerId).then(() => links?.rebuild(shelf)).catch(console.error);
@@ -272,6 +425,20 @@ function resize() {
   flow?.resize(innerWidth, innerHeight);
 }
 addEventListener('resize', resize); resize();
+
+// 顶栏模式切换：live/ckpt 重建数据源；arch 留给 Task 16
+const modeButtons = Array.from(document.querySelectorAll('.viewswitch button'));
+for (const btn of modeButtons) {
+  btn.addEventListener('click', () => {
+    const mode = btn.dataset.mode;
+    if (mode === 'arch') {
+      console.info('架构浏览器（arch）由 Task 16 实现');
+      return;
+    }
+    for (const b of modeButtons) b.classList.toggle('active', b === btn);
+    if (mode !== source) reload(mode);
+  });
+}
 
 function lerpTrays() {
   if (!shelf) return;

@@ -16,15 +16,23 @@
   <header id="topbar">
     <div class="brand">mini-llm-lab<span>3D 模型浏览器</span></div>
     <div class="viewswitch">
-      <button data-mode="ckpt" class="active">真实模型检视</button>
-      <button data-mode="live">实时训练</button>
+      <button data-mode="ckpt">真实模型检视</button>
+      <button data-mode="live" class="active">实时训练</button>
       <button data-mode="arch">架构浏览器</button>
     </div>
     <div class="spacer"></div>
     <span class="badge" id="badge-model">–</span>
     <span class="badge" id="badge-device">–</span>
   </header>
-  <aside id="left"></aside>
+  <aside id="left">
+    <div class="train-panel">
+      <div class="train-row">
+        <button id="btn-train-start">开始训练</button>
+        <button id="btn-train-stop" disabled>停止</button>
+      </div>
+      <div id="train-stats">未开始训练</div>
+    </div>
+  </aside>
   <aside id="drawer" class="hidden"><div id="drawerBody"><canvas id="matrix2d" width="360" height="360"></canvas></div></aside>
   <footer id="bottom">
     <div id="player"><button id="btn-play">▶</button><button id="btn-step">⏭</button><span id="prompt"></span></div>

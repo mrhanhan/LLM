@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { buildPlane, buildCubes } from './matrix.js';
+import { divergingRGB } from './colors.js';
 
 const GAP = 1.25;
 const SLAB_W = 4.2;
@@ -11,6 +12,41 @@ const SLAB_FADE = 0.12; // 展开层薄板淡出，给矩阵板让位（仍可�
 const MATRIX_H = 0.9;
 const MATRIX_PITCH = MATRIX_H + 0.15;
 const MATRIX_Z = SLAB_D / 2 + 0.05;
+
+// 权重统计值（norm/delta）在矩阵之间做 min-max 归一化，避免不同矩阵量级差异
+function bounds(arr) {
+  if (!arr.length) return { min: 0, span: 0 };
+  let min = arr[0];
+  let max = arr[0];
+  for (const v of arr) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return { min, span: max - min };
+}
+
+function norm01(v, b) {
+  return b.span < 1e-9 ? 0.5 : (v - b.min) / b.span;
+}
+
+// 对矩阵 mesh 做可视化调制：norm 决定冷暖色调，delta 决定自发光强度。
+// 纹理面片保留权重纹理，仅叠加明暗；实例化立方体直接改基础色。
+function applyValueVisual(mesh, t, dt) {
+  const mat = mesh.material;
+  if (!mat || Array.isArray(mat)) return;
+  const [r, g, b] = divergingRGB(t * 2 - 1);
+  if (mat.color && mat.color.setRGB) {
+    if (mat.map) mat.color.setRGB(0.55 + 0.45 * r, 0.55 + 0.45 * g, 0.55 + 0.45 * b);
+    else mat.color.setRGB(r, g, b);
+  }
+  if (mat.emissive && mat.emissive.setRGB) {
+    const e = 0.15 + 0.5 * dt;
+    mat.emissive.setRGB(r * e, g * e, b * e);
+  }
+  if (mat.transparent && typeof mat.opacity === 'number') {
+    mat.opacity = 0.55 + 0.45 * t;
+  }
+}
 
 function makeLabel(text) {
   const pad = 16;
@@ -149,5 +185,32 @@ export class Shelf {
 
   pickables() {
     return this.meshes.filter((m) => m.userData && m.userData.role === 'slab');
+  }
+
+  // 由 WS tick 的 values（按矩阵名）驱动矩阵板配色。
+  // 认 norm（预处理归一化值），delta 存在时额外驱动自发光。
+  updateValues(values) {
+    if (!values) return;
+    const items = [];
+    for (const mesh of this.meshes) {
+      const name = mesh.userData && mesh.userData.name;
+      if (!name) continue;
+      const raw = values[name];
+      if (raw == null) continue;
+      const n = typeof raw === 'number' ? raw : raw.norm ?? raw.act;
+      if (typeof n !== 'number' || !Number.isFinite(n)) continue;
+      const delta = typeof raw.delta === 'number' && Number.isFinite(raw.delta)
+        ? raw.delta
+        : null;
+      items.push({ mesh, n, delta });
+    }
+    if (!items.length) return;
+    const nb = bounds(items.map((it) => it.n));
+    const db = bounds(items.filter((it) => it.delta != null).map((it) => it.delta));
+    for (const it of items) {
+      const t = norm01(it.n, nb);
+      const dt = it.delta == null ? 0 : norm01(it.delta, db);
+      applyValueVisual(it.mesh, t, dt);
+    }
   }
 }
