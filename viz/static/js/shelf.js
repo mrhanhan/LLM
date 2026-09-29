@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { buildPlane, buildCubes } from './matrix.js';
+import { buildPlane, buildCubes, refreshMatrixTexture } from './matrix.js';
 import { divergingRGB } from './colors.js';
 
 const GAP = 1.25;
@@ -181,6 +181,21 @@ export class Shelf {
     }
     tray.userData.matrixMeshes = built;
     for (const mesh of built) mesh.visible = this.expanded === layerId;
+  }
+
+  // 训练中仅刷新展开层的矩阵纹理；用 _refreshing 防止请求叠加。
+  async refreshTextures(step) {
+    if (this.expanded == null || this._refreshing) return;
+    const tray = this.trays.get(this.expanded);
+    const list = tray && tray.userData.matrixMeshes;
+    if (!list || !list.length) return;
+    this._refreshing = true;
+    try {
+      await Promise.all(list.map((m) =>
+        refreshMatrixTexture(m, this.source, step).catch(() => {})));
+    } finally {
+      this._refreshing = false;
+    }
   }
 
   pickables() {

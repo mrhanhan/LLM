@@ -34,3 +34,12 @@ def test_main_has_train_config_wiring():
     src = (STATIC / "js" / "main.js").read_text(encoding="utf-8")
     assert "/api/datasets" in src
     assert "train-dataset" in src and "hp-max-steps" in src and "hp-hifi" in src
+
+
+def test_live_refresh_hooks_exist():
+    for f, needle in [("matrix.js", "refreshMatrixTexture"),
+                      ("shelf.js", "refreshTextures"),
+                      ("panel.js", "refreshLive"),
+                      ("main.js", "liveRefresh")]:
+        src = (STATIC / "js" / f).read_text(encoding="utf-8")
+        assert needle in src, f"{f} 缺少 {needle}"

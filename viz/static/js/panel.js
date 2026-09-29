@@ -84,6 +84,7 @@ export class Panel {
     this.seq = 0;
     this.tiles = 192;
     this.built = false;
+    this.live = false;
     this.cloudGroup = null;
     this.linksOn = false;
     this.linkSeq = 0;
@@ -438,6 +439,15 @@ export class Panel {
     this.tiles = tiles;
     this._setActive();
     this._draw(tiles);
+  }
+
+  setLive(on) {
+    this.live = !!on;
+  }
+
+  refreshLive() {
+    if (!this.live || this.tab !== 'matrix' || !this.spec) return;
+    this._draw(this.tiles);
   }
 
   async show(spec, source = 'live', globalAbsmax = null) {

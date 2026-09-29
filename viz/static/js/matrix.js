@@ -43,8 +43,42 @@ export function buildPlane(spec, source = 'live', tiles = 64, height = HEIGHT) {
     geo,
     new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
   );
-  mesh.userData = { kind: 'matrix', name: spec.name, spec, shape: spec.shape };
+  mesh.userData = { kind: 'matrix', name: spec.name, spec, shape: spec.shape, tiles };
   return mesh;
+}
+
+export async function refreshMatrixTexture(mesh, source = 'live', nonce = 0) {
+  const ud = mesh.userData || {};
+  const name = ud.name;
+  if (!name) return;
+  if (mesh.isInstancedMesh) {
+    const { values } = await getGrid(name, source, 256);
+    const cols = values[0] ? values[0].length : 1;
+    let absmax = 1e-6;
+    for (const row of values) for (const v of row) absmax = Math.max(absmax, Math.abs(v));
+    const col = new THREE.Color();
+    for (let r = 0; r < values.length; r++) {
+      for (let c = 0; c < cols; c++) {
+        const [rr, gg, bb] = divergingRGB(values[r][c] / absmax);
+        mesh.setColorAt(r * cols + c, col.setRGB(rr, gg, bb));
+      }
+    }
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    return;
+  }
+  const tiles = ud.tiles || 64;
+  const url = `${matrixPngUrl(name, source, tiles, 'global')}&t=${nonce}`;
+  await new Promise((resolve, reject) => {
+    loader.load(url, (tex) => {
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.LinearFilter;
+      const old = mesh.material.map;
+      mesh.material.map = tex;
+      mesh.material.needsUpdate = true;
+      if (old) old.dispose();
+      resolve();
+    }, undefined, reject);
+  });
 }
 
 export async function buildCubes(spec, source = 'live', height = HEIGHT) {

@@ -363,7 +363,16 @@ function readTrainPayload() {
   };
 }
 
-function liveRefresh() {}
+let lastPanelRefresh = 0;
+
+function liveRefresh(step) {
+  const now = performance.now();
+  if (now - lastPanelRefresh >= 500) {
+    lastPanelRefresh = now;
+    panel.refreshLive?.();
+  }
+  if (step % 20 === 0) shelf?.refreshTextures?.(step);
+}
 
 function resetLoss() {
   lossHistory.length = 0;
@@ -397,6 +406,7 @@ function setTraining(on) {
   if (trainDatasetSel) trainDatasetSel.disabled = training;
   if (hifiCheck) hifiCheck.disabled = training;
   for (const node of Object.values(hpInputs)) if (node) node.disabled = training;
+  panel.setLive(training);
 }
 
 function markModeButtons(target) {
