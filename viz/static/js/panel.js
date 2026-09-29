@@ -141,8 +141,15 @@ export class Panel {
       btn.textContent = '加载中…';
     }
     try {
-      await showNeuronLinks(group, this.spec.name, this.source, 800);
+      const rendered = await showNeuronLinks(
+        group,
+        this.spec.name,
+        this.source,
+        800,
+        () => mySeq !== this.linkSeq
+      );
       if (mySeq !== this.linkSeq) return;
+      if (!rendered) this.linksOn = false;
     } catch (e) {
       if (mySeq !== this.linkSeq) return;
       this.linksOn = false;

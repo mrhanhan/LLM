@@ -124,8 +124,9 @@ export async function showCloud(group, matrix, source = 'live', n = 160, isStale
   return true;
 }
 
-export async function showNeuronLinks(group, matrix, source = 'live', top = 800) {
+export async function showNeuronLinks(group, matrix, source = 'live', top = 800, isStale) {
   const data = await getNeurons(modulePath(matrix), source, 160, top);
+  if (isStale && isStale()) return false;
   if (data.error) throw new Error(data.error);
   disposeCloud(group);
   const inPts = merge(data.in_coords || [], data.in_norm || []);
