@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { getModel, getCell } from './api.js';
 import { Shelf } from './shelf.js';
+import { Links } from './links.js';
 import { cellFromIntersection } from './matrix.js';
 import { Panel } from './panel.js';
 import { showCloud, resizeCloud, disposeCloud } from './cloud.js';
@@ -98,11 +99,17 @@ function mountCloudControl(spec) {
 }
 
 let shelf = null;
+let links = null;
+window.__links = null;
 const SOURCE = 'live';
 try {
   const graph = await getModel(SOURCE);
   shelf = new Shelf(modelGroup, graph, SOURCE);
   window.__shelf = shelf;
+  links = new Links(modelGroup, graph);
+  links.resizeLinks(innerWidth, innerHeight);
+  links.rebuild(shelf);
+  window.__links = links;
 } catch (e) {
   console.error('加载模型图失败', e);
 }
@@ -173,7 +180,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
     window.__panel?.show?.(ud.spec, SOURCE);
     mountCloudControl(ud.spec);
   } else if (ud.role === 'slab') {
-    shelf.expand(ud.layerId).catch(console.error);
+    shelf.expand(ud.layerId).then(() => links?.rebuild(shelf)).catch(console.error);
   }
 });
 
@@ -181,6 +188,7 @@ function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   resizeCloud(innerWidth, innerHeight);
+  links?.resizeLinks(innerWidth, innerHeight);
 }
 addEventListener('resize', resize); resize();
 
