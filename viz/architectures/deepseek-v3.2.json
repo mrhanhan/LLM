@@ -1,0 +1,183 @@
+{
+  "id": "deepseek-v3.2",
+  "family": "DeepSeek",
+  "name": "DeepSeek-V3.2",
+  "vendor": "DeepSeek-AI",
+  "released": "2025-09",
+  "banner": "实验版本（-Exp）：在 V3.1-Terminus 之上引入 DeepSeek Sparse Attention，主干与 V3 对齐；2025-11 修复了 indexer 中 RoPE 需用非交错布局的实现差异。",
+  "source": "deepseek-ai/DeepSeek-V3.2-Exp（GitHub README + `inference/model.py` + `inference/config_671B_v3.2.json`）；HF `deepseek-ai/DeepSeek-V3.2-Exp` 与 `hf_transformers/modeling_deepseek_v32.py`；MLA / DeepSeekMoE 底座沿用 `reference/DeepSeek-V3/inference/model.py`",
+  "summary": "在 V3 主干（61 层、671B/37B、MLA + DeepSeekMoE）上叠加 DeepSeek Sparse Attention (DSA)：一个轻量 lightning indexer（64 头、head_dim 128、index_topk 2048）为每个 query 选出最相关的 top-2048 个 key，只对这些 key 做注意力，把长上下文注意力从 O(n²) 压到 O(n·topk)，效果与 V3.1-Terminus 持平。",
+  "params": {
+    "total": "671B",
+    "active": "37B",
+    "layers": 61,
+    "hidden": 7168,
+    "heads": "128（主 MLA）+ 64（indexer）",
+    "kv_heads": "128（MLA latent 512 + rope 64；indexer 另存 FP8 的 k_cache）",
+    "head_dim": "主 192（128 nope + 64 rope）/ v 128；indexer 128",
+    "ffn": "dense 18432；MoE 每专家 2048",
+    "vocab": "129280",
+    "ctx": "131072（128K；DSA 降低长文成本）",
+    "tie": false
+  },
+  "config_table": [
+    ["num_hidden_layers", "61"],
+    ["n_dense_layers", "3（第 0–2 层 dense FFN）"],
+    ["hidden_size (dim)", "7168"],
+    ["num_attention_heads", "128"],
+    ["q_lora_rank", "1536"],
+    ["kv_lora_rank", "512"],
+    ["qk_nope_head_dim", "128"],
+    ["qk_rope_head_dim", "64"],
+    ["v_head_dim", "128"],
+    ["intermediate_size", "18432（dense 层）"],
+    ["moe_intermediate_size", "2048（每专家）"],
+    ["n_routed_experts", "256"],
+    ["n_shared_experts", "1"],
+    ["n_activated_experts (top-k)", "8"],
+    ["n_expert_groups / n_limited_groups", "8 / 4"],
+    ["route_scale", "2.5"],
+    ["score_func", "sigmoid"],
+    ["index_n_heads", "64"],
+    ["index_head_dim", "128"],
+    ["index_topk", "2048"],
+    ["hidden_act", "silu（SwiGLU）"],
+    ["rms_norm_eps", "1e-6"],
+    ["rope_theta", "10000"],
+    ["rope_scaling", "YaRN，factor 40，original_seq_len 4096"],
+    ["scale_fmt", "ue8m0（FP8 缩放因子格式）"],
+    ["max_position_embeddings", "131072（128K）"],
+    ["num_nextn_predict_layers", "1（HF config；参考实现未实现 MTP）"],
+    ["tie_word_embeddings", "false"],
+    ["vocab_size", "129280"],
+    ["dtype / quantization", "fp8 + ue8m0；indexer 打分走 fp8_index 核，Hadamard 旋转后量化"]
+  ],
+  "innovations": [
+    {
+      "title": "DeepSeek Sparse Attention (DSA)",
+      "text": "在 MLA 之外加一个轻量 Indexer：它用自己的一套 q/k（64 头、head_dim 128）给每个 query 打分，选出 top-2048 个最相关的 key，只对这些 key 做注意力。长文下注意力开销从 O(n²) 降为 O(n·topk)，且质量与 V3.1-Terminus 基本一致。"
+    },
+    {
+      "title": "Lightning Indexer + fp8_index",
+      "text": "Indexer 打分：q、k 先做 Hadamard 旋转（rotate_activation，正交变换利于量化），再 act_quant 到 FP8，用 fp8_index 核得到 64 头加权 ReLU 内积打分；k 以 FP8 存进独立的 k_cache，另存 FP8 缩放。"
+    },
+    {
+      "title": "非交错（non-interleaved）indexer RoPE",
+      "text": "主 MLA 的 RoPE 用交错布局，而 indexer 的 q/k RoPE 必须用非交错布局（按前后半拆分再旋转）。README 记录曾因此有实现差异并已修复（`model.py:405-425,463-470`）。"
+    },
+    {
+      "title": "融合 RMSNorm + 残差（fused residual）",
+      "text": "Block 把残差与 RMSNorm 融合：RMSNorm.forward 接受 residual 参数，若传入则先做 x+residual 再做归一化并返回新的 residual，减少一次读写。注意力权重用 float32、expert 也做 float 精度提升。",
+      "tex": "\\big(\\mathrm{RMSNorm}(\\mathbf{x}+\\mathbf{r}),\\;\\mathbf{x}+\\mathbf{r}\\big)=\\mathrm{FusedRMS}(\\mathbf{x},\\mathbf{r})"
+    },
+    {
+      "title": "其余沿用 V3",
+      "text": "MLA ranks（1536/512/128/64/128）、256+1 专家 top-8、前 3 层 dense、aux-loss-free 选择偏置、route_scale 2.5、128K 全部不变；仅缩放因子格式从 e4m3 改为 ue8m0。"
+    }
+  ],
+  "signal_flow": [
+    {"stage": "输入 token id", "shape": "[B, T]", "note": "B=batch, T=序列长（≤128K）"},
+    {"stage": "词嵌入 tok_emb", "shape": "[B, T, 7168]", "note": ""},
+    {"stage": "层 0–2：MLA + DSA + dense SwiGLU", "shape": "[B, T, 7168]", "note": "n_dense_layers=3"},
+    {"stage": "层 3–60：MLA + DSA + DeepSeekMoE(1+256, top-8)", "shape": "[B, T, 7168]", "note": "indexer 每 query 选 top-2048 key"},
+    {"stage": "最终融合 RMSNorm", "shape": "[B, T, 7168]", "note": "与残差一起归一化"},
+    {"stage": "lm_head（不共享，fp32 参数）", "shape": "[B, T, 129280]", "note": "输出 logits"}
+  ],
+  "layers": {
+    "n": 61,
+    "groups": [
+      {"from": 0, "to": 2, "attn": "mla_dsa", "ffn": "dense_swiglu", "note": "第 0–2 层：dense SwiGLU FFN（n_dense_layers=3），注意力为 MLA + DSA indexer"},
+      {"from": 3, "to": 60, "attn": "mla_dsa", "ffn": "deepseek_moe", "note": "第 3–60 层：MLA + DSA + DeepSeekMoE（1 共享 + 256 路由，top-8）"}
+    ]
+  },
+  "attn_specs": {
+    "mla_dsa": {
+      "label": "MLA + DSA（DeepSeek Sparse Attention）",
+      "desc": "主分支仍是 V3 的 MLA（低秩 Q、KV latent 512 + decoupled rope 64、absorb 推理）。额外挂一个 lightning indexer：q 由 q_lora 残差（qr）经 wq_b 得到（64 头 ×128），k 由 wk 得到并过 LayerNorm；q/k 先做 Hadamard 旋转再 act_quant 到 FP8，用 fp8_index 计算 64 头加权 ReLU 内积，top-2048 作为稀疏掩码，只让主注意力看这些 key。indexer 的 RoPE 为非交错布局。FP8 KV 为部署模拟。",
+      "tex": "\\mathbf{c}_{kv}=\\mathrm{RMSNorm}(W_{kva}\\mathbf{x})\\in\\mathbb{R}^{512},\\quad \\mathbf{k}_{pe}=W_{kr}\\mathbf{x}\\in\\mathbb{R}^{64}\n\\mathbf{q}^I=W^{I}_{qb}\\,\\mathbf{q}_r,\\quad \\mathbf{k}^I=\\mathrm{LN}(W^{I}_{k}\\mathbf{x}),\\quad \\tilde{\\mathbf{q}}^I=\\mathrm{Hadamard}(\\mathbf{q}^I),\\;\\tilde{\\mathbf{k}}^I=\\mathrm{Hadamard}(\\mathbf{k}^I)\n\\mathbf{I}_t=\\mathrm{TopK}_{2048}\\Big(\\sum_h w_{t,h}\\,\\mathrm{ReLU}\\big(\\tilde{\\mathbf{q}}^I_{t,h}\\cdot(\\tilde{\\mathbf{k}}^I_s)^{\\top}\\big)\\Big)\n\\mathrm{attn}(t)=\\mathrm{softmax}\\!\\Big(\\frac{[\\mathbf{q}_{nope};\\mathbf{q}_{pe}]_t\\,[\\mathbf{k}_{nope};\\mathbf{k}_{pe}]^{\\top}}{\\sqrt{192}}+M+\\tilde{M}_t\\Big)\\mathbf{v},\\qquad \\tilde{M}_t[j]=0\\iff j\\in\\mathbf{I}_t",
+      "code": "```python\n# reference/DeepSeek-V3.2-Exp/inference/model.py:435-487（Indexer）\nself.wq_b = Linear(self.q_lora_rank, self.n_heads * self.head_dim)  # index q\nself.wk = Linear(self.dim, self.head_dim)                           # index k\nself.k_norm = LayerNorm(self.head_dim)\nself.weights_proj = Linear(self.dim, self.n_heads, dtype=torch.float32)\n# forward:\nq_pe = apply_rotary_emb(q_pe, freqs_cis, False)   # 非交错\nk_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis, False).squeeze(2)\nq, k = rotate_activation(q), rotate_activation(k)  # Hadamard 旋转\nq_fp8, q_scale = act_quant(q, block_size, self.scale_fmt)\nk_fp8, k_scale = act_quant(k, block_size, self.scale_fmt)\nindex_score = fp8_index(q_fp8, weights, self.k_cache[:bsz, :end_pos], self.k_scale_cache[:bsz, :end_pos])\ntopk_indices = index_score.topk(min(self.index_topk, end_pos), dim=-1)[1]\n```"
+    }
+  },
+  "ffn_specs": {
+    "dense_swiglu": {
+      "label": "SwiGLU（dense）",
+      "desc": "第 0–2 层的普通门控前馈（inter_dim=18432）。与 mini-llm-lab 的 SwiGLU 一致；V3.2 的 MLP 前向在 float 精度上做 SiLU 后再回 bf16。",
+      "tex": "\\mathrm{SwiGLU}(\\mathbf{x})=W_{down}\\big(\\mathrm{SiLU}(W_{gate}\\mathbf{x})\\odot W_{up}\\mathbf{x}\\big)",
+      "code": "```python\n# reference/DeepSeek-V3.2-Exp/inference/model.py:620-643\nself.w1 = ColumnParallelLinear(dim, inter_dim)\nself.w2 = RowParallelLinear(inter_dim, dim, reduce_output=reduce_output)\nself.w3 = ColumnParallelLinear(dim, inter_dim)\n# forward:\nreturn self.w2((F.silu(self.w1(x).float()) * self.w3(x).float()).type_as(x))\n```"
+    },
+    "deepseek_moe": {
+      "label": "DeepSeekMoE（1 共享 + 256 路由, top-8）",
+      "desc": "与 V3 相同：sigmoid 打分选 top-8（8 组选 4 组），top-k 归一化后乘 route_scale=2.5，另一个恒激活的共享专家；选择用 noaux_tc 的 float32 偏置，只影响选谁。V3.2 中路由与专家计算在 float 精度上做。",
+      "tex": "\\{e_1,\\dots,e_8\\}=\\mathrm{TopK}_8\\big(\\mathrm{sigmoid}(W_g\\mathbf{x})+\\mathbf{b}\\big),\\quad \\tilde{s}_i=\\mathrm{sigmoid}(W_g\\mathbf{x})_{e_i}\n\\mathrm{MoE}(\\mathbf{x})=\\sum_{i=1}^{8}\\frac{\\tilde{s}_i}{\\sum_j\\tilde{s}_j}\\,\\mathrm{Expert}_{e_i}(\\mathbf{x})\\cdot 2.5\\;+\\;\\mathrm{SharedMLP}(\\mathbf{x})",
+      "code": "```python\n# reference/DeepSeek-V3.2-Exp/inference/model.py:660-709（Gate）, 747-804（MoE）\nscores = linear(x.float(), self.weight.float())\nscores = scores.sigmoid()\noriginal_scores = scores\nif self.bias is not None:\n    scores = scores + self.bias\nindices = scores.topk(self.topk, dim=-1)[1]\nweights = original_scores.gather(1, indices)\nweights /= weights.sum(dim=-1, keepdim=True)\nweights *= self.route_scale\ny += self.shared_experts(x)\n```"
+    }
+  },
+  "extra_specs": [
+    {
+      "label": "融合 RMSNorm + 残差",
+      "desc": "RMSNorm.forward 可选传入 residual：传入时先算 x+residual 再归一化，并把新的 residual 一并返回；不传时退化为普通 RMSNorm。这样每层少一次对 hidden 的重复读写。权重以 float32 存储。",
+      "tex": "\\mathrm{RMSNorm}(\\mathbf{x})=\\frac{\\mathbf{x}}{\\sqrt{\\frac{1}{d}\\sum_i x_i^2+\\epsilon}}\\odot\\boldsymbol{\\gamma},\\qquad \\mathbf{r}'=\\mathbf{x}+\\mathbf{r}",
+      "code": "```python\n# reference/DeepSeek-V3.2-Exp/inference/model.py:286-306\nif residual is None:\n    x = x.float(); var = x.pow(2).mean(-1, keepdim=True)\n    return (self.weight * x * torch.rsqrt(var + self.eps)).to(dtype)\nelse:\n    x = residual = x.float() + residual.float()\n    var = x.pow(2).mean(-1, keepdim=True)\n    return (self.weight * x * torch.rsqrt(var + self.eps)).to(dtype), residual.to(dtype)\n```"
+    },
+    {
+      "label": "Hadamard 旋转（rotate_activation）",
+      "desc": "Indexer 打分前对 q/k 做正交的 Hadamard 变换（scale = 1/√d），使内积在旋转后保持不变，同时把激活分布变得更利于 FP8 量化。依赖 fast_hadamard_transform。",
+      "tex": "\\mathrm{Hadamard}(\\mathbf{x})=H_d\\,\\mathbf{x},\\qquad H_d^{\\top}H_d=I_d,\\qquad \\langle H\\mathbf{q},H\\mathbf{k}\\rangle=\\langle\\mathbf{q},\\mathbf{k}\\rangle",
+      "code": "```python\n# reference/DeepSeek-V3.2-Exp/inference/model.py:428-432\ndef rotate_activation(x: torch.Tensor) -> torch.Tensor:\n    assert x.dtype == torch.bfloat16\n    from fast_hadamard_transform import hadamard_transform\n    hidden_size = x.size(-1)\n    return hadamard_transform(x, scale=hidden_size ** -0.5)\n```"
+    },
+    {
+      "label": "fp8_index / FP8 KV（ue8m0 缩放）",
+      "desc": "Indexer 的 k 以 FP8(e4m3) 存进独立缓存，另存每 block 的缩放；打分调用 fp8_index 核。主 MLA 的 kv 也模拟 FP8 KV：量化后再反量化，再写入 kv_cache。整个权重缩放格式为 ue8m0。",
+      "tex": "\\text{score}_{t,s}=\\mathrm{fp8\\_index}\\big(\\mathrm{act\\_quant}(\\tilde{\\mathbf{q}}^I_t),\\;\\mathrm{act\\_quant}(\\tilde{\\mathbf{k}}^I_s)\\big)",
+      "code": "```python\n# reference/DeepSeek-V3.2-Exp/inference/model.py:474-480,569-571\nq_fp8, q_scale = act_quant(q, block_size, self.scale_fmt)\nk_fp8, k_scale = act_quant(k, block_size, self.scale_fmt)\nself.k_cache[:bsz, start_pos:end_pos] = k_fp8\nself.k_scale_cache[:bsz, start_pos:end_pos] = k_scale\nindex_score = fp8_index(q_fp8.contiguous(), weights, self.k_cache[:bsz, :end_pos].contiguous(), self.k_scale_cache[:bsz, :end_pos].contiguous())\n# 主 MLA 的 FP8 KV 模拟\nkv_fp8, kv_scale = act_quant(kv, block_size, self.scale_fmt)\nkv = (kv_fp8.view(-1, block_size).float() * kv_scale.view(-1, 1)).to(kv.dtype).view_as(kv)\n```"
+    },
+    {
+      "label": "Partial / Decoupled RoPE（主 MLA）",
+      "desc": "主 MLA 的 RoPE 与 V3 一致：θ=10000，只旋转 64 维 rope 切片，128 维 nope 不旋转；YaRN factor 40 外推。Indexer 分支复用同一 freqs，但以非交错布局应用。",
+      "tex": "\\mathbf{q}_{pe}=\\mathrm{RoPE}(\\mathbf{q}_{pe};\\theta),\\qquad \\mathbf{k}_{pe}=\\mathrm{RoPE}(\\mathbf{k}_{pe};\\theta),\\qquad \\theta=10000",
+      "code": "```python\n# reference/DeepSeek-V3.2-Exp/inference/model.py:563-568\nq_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)\nq_pe = apply_rotary_emb(q_pe, freqs_cis)\nkv, k_pe = torch.split(kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)\nk_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis)\n```"
+    },
+    {
+      "label": "MTP（多 token 预测，1 层）— 参考实现未含",
+      "desc": "与 V3 一致 num_nextn_predict_layers=1；但本地 `inference/model.py` 未实现 MTP，仅 HF config 暴露该字段。",
+      "tex": "n_{\\text{nextn}}=1"
+    }
+  ],
+  "code": [
+    {
+      "name": "DSA Indexer：定义与打分",
+      "ref": "reference/DeepSeek-V3.2-Exp/inference/model.py:435-487",
+      "lang": "python",
+      "code": "class Indexer(torch.nn.Module):\n    def __init__(self, args: ModelArgs):\n        self.n_heads = args.index_n_heads          # 64\n        self.head_dim = args.index_head_dim        # 128\n        self.index_topk = args.index_topk          # 2048\n        self.wq_b = Linear(self.q_lora_rank, self.n_heads * self.head_dim)\n        self.wk = Linear(self.dim, self.head_dim)\n        self.k_norm = LayerNorm(self.head_dim)\n        self.weights_proj = Linear(self.dim, self.n_heads, dtype=torch.float32)\n        self.register_buffer(\"k_cache\", torch.zeros(..., self.head_dim, dtype=torch.float8_e4m3fn), persistent=False)\n        self.register_buffer(\"k_scale_cache\", torch.zeros(..., self.head_dim // block_size, dtype=torch.float32), persistent=False)\n    def forward(self, x, qr, start_pos, freqs_cis, mask):\n        q = self.wq_b(qr).view(bsz, seqlen, self.n_heads, self.head_dim)\n        q_pe, q_nope = torch.split(q, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)\n        q_pe = apply_rotary_emb(q_pe, freqs_cis, False)   # non-interleaved\n        k = self.k_norm(self.wk(x))\n        k_pe, k_nope = torch.split(k, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)\n        k_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis, False).squeeze(2)\n        q, k = rotate_activation(q), rotate_activation(k)\n        q_fp8, q_scale = act_quant(q, block_size, self.scale_fmt)\n        k_fp8, k_scale = act_quant(k, block_size, self.scale_fmt)\n        self.k_cache[:bsz, start_pos:end_pos] = k_fp8\n        self.k_scale_cache[:bsz, start_pos:end_pos] = k_scale\n        weights = self.weights_proj(x.float()) * self.n_heads ** -0.5\n        weights = weights.unsqueeze(-1) * q_scale * self.softmax_scale\n        index_score = fp8_index(q_fp8.contiguous(), weights, self.k_cache[:bsz, :end_pos].contiguous(), self.k_scale_cache[:bsz, :end_pos].contiguous())\n        topk_indices = index_score.topk(min(self.index_topk, end_pos), dim=-1)[1]\n        return topk_indices"
+    },
+    {
+      "name": "Hadamard 旋转（rotate_activation）",
+      "ref": "reference/DeepSeek-V3.2-Exp/inference/model.py:428-432",
+      "lang": "python",
+      "code": "def rotate_activation(x: torch.Tensor) -> torch.Tensor:\n    assert x.dtype == torch.bfloat16\n    from fast_hadamard_transform import hadamard_transform\n    hidden_size = x.size(-1)\n    return hadamard_transform(x, scale=hidden_size ** -0.5)"
+    },
+    {
+      "name": "MLA 前向：indexer 掩码折叠进注意力",
+      "ref": "reference/DeepSeek-V3.2-Exp/inference/model.py:545-608",
+      "lang": "python",
+      "code": "qr = self.q_norm(self.wq_a(x))\nq = self.wq_b(qr).view(bsz, seqlen, self.n_local_heads, self.qk_head_dim)\nq_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)\nq_pe = apply_rotary_emb(q_pe, freqs_cis)\nkv = self.wkv_a(x)\nkv, k_pe = torch.split(kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)\nkv = self.kv_norm(kv)\nk_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis)\n# ... prefill 分支：\ntopk_indices = self.indexer(x, qr, start_pos, freqs_cis, mask)\nindex_mask = torch.full((bsz, seqlen, seqlen), float(\"-inf\"), device=x.device).scatter_(-1, topk_indices, 0)\nindex_mask += mask\nscores += index_mask.unsqueeze(2)\nscores = scores.softmax(dim=-1)"
+    },
+    {
+      "name": "融合 RMSNorm + 残差",
+      "ref": "reference/DeepSeek-V3.2-Exp/inference/model.py:286-306",
+      "lang": "python",
+      "code": "def forward(self, x, residual=None):\n    dtype = x.dtype\n    if residual is None:\n        x = x.float(); var = x.pow(2).mean(-1, keepdim=True)\n        x = x * torch.rsqrt(var + self.eps)\n        return (self.weight * x).to(dtype)\n    else:\n        x = residual = x.float() + residual.float()\n        var = x.pow(2).mean(-1, keepdim=True)\n        x = x * torch.rsqrt(var + self.eps)\n        return (self.weight * x).to(dtype), residual.to(dtype)"
+    },
+    {
+      "name": "Block：前置残差 + MLA + MoE",
+      "ref": "reference/DeepSeek-V3.2-Exp/inference/model.py:807-851",
+      "lang": "python",
+      "code": "if residual is None:\n    x, residual = self.attn_norm(x), x\nelse:\n    x, residual = self.attn_norm(x, residual)\nx = self.attn(x, start_pos, freqs_cis, mask)\nx, residual = self.ffn_norm(x, residual)\nx = self.ffn(x)\nreturn x, residual"
+    }
+  ],
+  "papers": [
+    {"title": "DeepSeek-V3.2-Exp: Boosting Long-Context Efficiency with DeepSeek Sparse Attention (GitHub)", "url": "https://github.com/deepseek-ai/DeepSeek-V3.2-Exp"},
+    {"title": "deepseek-ai/DeepSeek-V3.2-Exp (HF)", "url": "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp"}
+  ],
+  "diff_mini": "DeepSeek-V3.2 对 mini-llm-lab 的差异，等于 DeepSeek-V3 的全部差异，再加一个『稀疏注意力』维度：\n\n- **注意力：GQA → MLA + DSA**。除了 V3 的 MLA（512 维 latent + 64 维 rope、partial RoPE、YaRN），还多一个 lightning indexer：64 头、head_dim 128，用 Hadamard 旋转 + FP8 的 fp8_index 打分，每 query 只保留 top-2048 个 key。我们连 GQA 的 KV 缓存都按全量存，完全没有稀疏选择。\n- **FFN：dense SwiGLU → DeepSeekMoE**（1 共享 + 256 路由、top-8、aux-loss-free 偏置，前 3 层 dense）。\n- **残差/归一化**：RMSNorm 与残差融合，省一次读写（我们仍是分离的 `x + f(norm(x))`）。\n- **规模/精度**：7168 维 × 61 层、词表 129280、128K，671B / 37B；FP8 ue8m0 + FP8 KV，不共享权重。\n\n一句话：**V3.2 = V3 + DSA 稀疏索引器 —— 主干同源，注意力从 O(n²) 变 O(n·topk)。**"
+}

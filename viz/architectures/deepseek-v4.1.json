@@ -1,0 +1,395 @@
+{
+  "id": "deepseek-v4.1",
+  "family": "DeepSeek",
+  "name": "DeepSeek-V4.1",
+  "vendor": "DeepSeek-AI",
+  "banner": "DeepSeek 官方未发布 V4 / V4.1 的 GitHub 建模仓库；本地 `modeling_deepseek_v4.py` 是 transformers 的**通用 V4** 实现（含 mHC / CSA+HCA / indexer / MoE / hash 路由），但**未实现 V4.1 独有的 CED 编解码拆分、CSA2 三模式（Full/Reindex/Reuse）、分层候选池、Engram、DSpark、DeepSeek-ViT**——这些只见于 HF `hf_config.json` / `hf_README.md`。下文凡 V4.1 专属组件均标注为『配置/README 描述，参考代码未实现』。",
+  "source": "HF `deepseek-ai/DeepSeek-V4.1-Flash`（`hf_config.json` + `hf_README.md`）+ transformers 通用实现 `hf_transformers/modeling_deepseek_v4.py` / `configuration_deepseek_v4.py`；无官方 GitHub 建模仓库，仅 HF 权重 + config + 技术报告",
+  "summary": "552B 骨架 / 每 token 激活 8B（prefill）–16B（decode）的原生多模态 MoE：采用 Causal Encoder-Decoder（CED，40 层 = 20 encoder + 20 decoder），注意力是 shared-KV MQA（仅 1 个 KV 头、head_dim 512、分组低秩输出）叠加 CSA2 压缩稀疏注意力与分层稀疏索引器，全局 KV 缓存仅约 890 B/token，支持 1M 上下文；另有 mHC 多流残差、Engram 条件记忆、DSpark 推测解码与 DeepSeek-ViT 视觉编码器。",
+  "vision": "DeepSeek-ViT 32 层 / hidden 1024 / 16 头 / patch 14 / downsample 3（3×3 pixel-unshuffle）+ 2 层 MLP 投影；image token 129264",
+  "params": {
+    "total": "552B 骨架（+196B Engram）",
+    "active": "8B（prefill）/ 16B（decode）",
+    "layers": "40（20 encoder + 20 decoder）",
+    "hidden": 5120,
+    "heads": "64（Q）；indexer 32 头",
+    "kv_heads": "1（shared-KV MQA，广播到 64 个 Q 头）",
+    "head_dim": "512（RoPE 只作用于前 64 维）",
+    "ffn": "MoE 每专家 2304（无 dense 层）",
+    "vocab": "129280",
+    "ctx": "1048576（1M；稀疏注意力在 64K 训练后扩到 1M）",
+    "tie": false
+  },
+  "config_table": [
+    [
+      "architectures",
+      "DeepseekV41ForCausalLM"
+    ],
+    [
+      "num_hidden_layers",
+      "40（20 causal encoder + 20 decoder，CED）"
+    ],
+    [
+      "hidden_size",
+      "5120"
+    ],
+    [
+      "num_attention_heads",
+      "64"
+    ],
+    [
+      "num_key_value_heads",
+      "1（shared-KV MQA）"
+    ],
+    [
+      "head_dim",
+      "512"
+    ],
+    [
+      "qk_rope_head_dim",
+      "64（partial RoPE）"
+    ],
+    [
+      "q_lora_rank",
+      "1280"
+    ],
+    [
+      "o_lora_rank",
+      "1024"
+    ],
+    [
+      "o_groups",
+      "8（分组低秩输出）"
+    ],
+    [
+      "n_routed_experts",
+      "384"
+    ],
+    [
+      "n_shared_experts",
+      "1"
+    ],
+    [
+      "num_experts_per_tok",
+      "6"
+    ],
+    [
+      "moe_intermediate_size",
+      "2304"
+    ],
+    [
+      "scoring_func",
+      "sqrtsoftplus"
+    ],
+    [
+      "topk_method",
+      "noaux_tc"
+    ],
+    [
+      "norm_topk_prob",
+      "true"
+    ],
+    [
+      "routed_scaling_factor",
+      "1.5"
+    ],
+    [
+      "swiglu_limit",
+      "10.0"
+    ],
+    [
+      "sliding_window",
+      "128"
+    ],
+    [
+      "compress_ratios",
+      "[0,0,2×18,1×20,0,0,0]（配置中长度 43；CSA2 每层静态模式由配置决定）"
+    ],
+    [
+      "compress_rope_theta",
+      "160000（压缩分支）"
+    ],
+    [
+      "rope_theta",
+      "10000（主分支）"
+    ],
+    [
+      "rope_scaling",
+      "YaRN，factor 16，original 65536，beta 32/1"
+    ],
+    [
+      "index_n_heads / index_head_dim / index_topk",
+      "32 / 128 / 512"
+    ],
+    [
+      "candidate_topk_blocks / candidate_block_size",
+      "2048 / 8（分层索引候选池）"
+    ],
+    [
+      "kv_source_layer_ids / index_source_layer_ids",
+      "[2,8,14,20] / [2,8,14,20,24,28,32,36]"
+    ],
+    [
+      "candidate_source_layer_id",
+      "20"
+    ],
+    [
+      "hc_mult / hc_sinkhorn_iters / hc_eps",
+      "4 / 20 / 1e-6（mHC）"
+    ],
+    [
+      "engram_layer_ids / engram_max_ngram_size",
+      "[1,14] / 4（Engram 条件记忆，196B）"
+    ],
+    [
+      "num_nextn_predict_layers",
+      "3（MTP）"
+    ],
+    [
+      "dspark_block_size / dspark_target_layer_ids",
+      "5 / [37,38,39]（DSpark 推测解码）"
+    ],
+    [
+      "rms_norm_eps",
+      "1e-20"
+    ],
+    [
+      "max_position_embeddings",
+      "1048576（1M）"
+    ],
+    [
+      "tie_word_embeddings",
+      "false"
+    ],
+    [
+      "vocab_size",
+      "129280"
+    ],
+    [
+      "quantization_config",
+      "FP8 32×32 分块（ue8m0）+ 专家 FP4；KV 约 890 B/token"
+    ],
+    [
+      "vision_config",
+      "DeepSeek-ViT：32 层、hidden 1024、16 头、patch 14、downsample 3；image_token_id 129264"
+    ]
+  ],
+  "innovations": [
+    {
+      "title": "CED：Causal Encoder-Decoder",
+      "text": "40 层被组织成 20 层 causal encoder + 20 层 decoder。decoder 的全局 KV 由 encoder 末层的 hidden state 投影而来，而非逐 decoder 层自算，因此 prefill 每 token 只激活约 8B、decode 约 16B，显著降低输入密集的 agentic 负载成本（README 描述）。",
+      "tex": "\\mathbf{K}^{\\text{dec}},\\mathbf{V}^{\\text{dec}}=\\mathrm{Proj}\\!\\big(\\mathbf{H}^{\\text{enc}}_{\\text{last}}\\big)"
+    },
+    {
+      "title": "shared-KV MQA + 分组低秩输出",
+      "text": "注意力只有 1 个 KV 头（num_key_value_heads=1）、head_dim 512，KV 广播给全部 64 个 Q 头；Q 走低秩（q_lora_rank=1280）后过 unweighted RMSNorm；输出走分组低秩投影（o_groups=8、每 group o_lora_rank=1024）再合并回 5120。partial RoPE 只旋转前 64 维。",
+      "tex": "\\mathbf{c}_q=\\mathrm{RMSNorm}(W_{qa}\\mathbf{x})\\in\\mathbb{R}^{1280},\\quad \\mathbf{q}=W_{qb}\\mathbf{c}_q\\in\\mathbb{R}^{64\\times512}\n\\mathbf{k}=\\mathbf{v}=\\mathrm{RMSNorm}(W_{kv}\\mathbf{x})\\in\\mathbb{R}^{512}\\;\\text{（单 KV 头，广播到 64 个 Q 头）}"
+    },
+    {
+      "title": "CSA2：压缩稀疏注意力（Full/Reindex/Reuse）",
+      "text": "每一注意力层被静态指定 Full / Reindex / Reuse 三种模式之一，在层间共享主 KV 与 indexer K、复用 top-k 稀疏索引；每层再叠加 sliding_window=128 的局部窗口。压缩把每 m 个来源 token 压成 1 个压缩 KV 条目，query 只在压缩条目 + 窗口上做注意力，全局 KV 降到约 890 B/token（README 描述；通用代码实现的是 V4 的 CSA/HCA，不是 V4.1 的三模式）。",
+      "tex": "\\mathbf{C}_w=\\sum_{j\\in w}\\mathrm{softmax}(\\mathbf{z}_j+\\mathbf{b})_j\\odot\\mathbf{c}_j\\quad(m\\ \\text{tokens}\\to1\\ \\text{compressed entry})\n\\mathrm{CSA2}\\in\\{\\text{Full},\\text{Reindex},\\text{Reuse}\\}"
+    },
+    {
+      "title": "Hierarchical Sparse Indexer（分层稀疏索引器）",
+      "text": "decoder 中较后的索引层被限制在由第一个 Full 模式层构造的候选池内选择（candidate_topk_blocks=2048 块 × block 8），使深层索引成本与上下文长度解耦；indexer 本身 32 头、head_dim 128、index_topk=512。",
+      "tex": "\\mathcal{I}_t=\\mathrm{TopK}_{512}\\Big(\\sum_h w_{t,h}\\,\\mathrm{ReLU}\\big(\\mathbf{q}^I_{t,h}\\cdot(\\mathbf{K}^{I})^{\\top}\\big)\\Big),\\quad \\mathcal{C}\\subseteq\\text{CandidatePool}_{2048\\times8}"
+    },
+    {
+      "title": "mHC（Manifold-Constrained Hyper-Connections）",
+      "text": "残差从单路变成 hc_mult=4 条并行流 [B,T,N,D]：进块前用 pre 权重塌缩成 1 路，出块后用 post 权重展开，并与输入流用 comb 权重混合。comb 经 Sinkhorn-Knopp（20 次迭代）约束为双随机矩阵，保证信号传播非扩张。",
+      "tex": "\\mathrm{pre}=\\sigma(W_p\\mathbf{x})+\\epsilon,\\quad \\mathrm{post}=2\\,\\sigma(W_o\\mathbf{x}),\\quad \\mathrm{comb}=\\mathrm{Sinkhorn}_{20}\\!\\big(\\mathrm{softmax}(W_c\\mathbf{x})\\big)\n\\mathbf{H}'=\\mathbf{H}\\,\\mathrm{comb}^{\\top}+\\mathrm{post}\\odot\\mathrm{Block}(\\mathbf{H}\\,\\mathrm{pre})"
+    },
+    {
+      "title": "Engram 条件记忆",
+      "text": "一个 196B 参数的外挂条件记忆：按 token 的 n-gram（engram_max_ngram_size=4）稀疏查表，在指定层 [1,14] 注入记忆向量，与主干互补（README/config 描述，参考代码未实现）。",
+      "tex": "\\mathbf{m}=\\mathrm{Engram}\\!\\big(\\mathrm{ngram}(\\text{tokens})\\big),\\qquad \\mathbf{h}\\leftarrow\\mathbf{h}+\\mathbf{m}"
+    },
+    {
+      "title": "DSpark 半自回归推测解码",
+      "text": "DSpark 生成半自回归草稿 token（block_size=5），用置信度调度验证；目标层为 37–39（末 3 层）。是 MTP 的进化版，配合 3 层 MTP 头加速 decode（README/config 描述，参考代码未实现）。",
+      "tex": "\\text{draft}_{1:5}=\\mathrm{DSpark}(\\mathbf{h}),\\qquad \\text{verify by confidence}\\to\\text{accept/reject}"
+    },
+    {
+      "title": "1M 上下文 + 原生多模态",
+      "text": "max_position_embeddings=1048576；DeepSeek-ViT（32 层、hidden 1024、16 头、patch 14、3×3 pixel-unshuffle、downsample 3）经 2 层 MLP 投到 5120 维，图像 token id 129264。文本/图像从预训练早期就联合处理。",
+      "tex": "\\mathbf{z}_v=\\mathrm{MLP}_{2}\\!\\big(\\mathrm{DeepSeek\\text{-}ViT}(\\mathbf{I})\\big)\\in\\mathbb{R}^{N_v\\times5120}"
+    }
+  ],
+  "signal_flow": [
+    {
+      "stage": "输入（文本 / 图像 token）",
+      "shape": "[B, T]",
+      "note": "视觉经 DeepSeek-ViT + 2 层 MLP 投到 5120 维"
+    },
+    {
+      "stage": "词嵌入 tok_emb → mHC 展开",
+      "shape": "[B, T, 4, 5120]",
+      "note": "hc_mult=4 条残差流"
+    },
+    {
+      "stage": "编码器层 0–19：MQA+CSA2 + MoE",
+      "shape": "[B, T, 4, 5120]",
+      "note": "decoder 全局 KV 由此投影"
+    },
+    {
+      "stage": "解码器层 20–39：MQA+CSA2 + MoE",
+      "shape": "[B, T, 4, 5120]",
+      "note": "分层稀疏索引器限制候选池"
+    },
+    {
+      "stage": "hc_head（mHC 塌缩）→ 最终 RMSNorm",
+      "shape": "[B, T, 5120]",
+      "note": ""
+    },
+    {
+      "stage": "lm_head（不共享）",
+      "shape": "[B, T, 129280]",
+      "note": "输出 logits"
+    },
+    {
+      "stage": "MTP ×3 + DSpark",
+      "shape": "[B, T, 129280]",
+      "note": "推测解码加速"
+    }
+  ],
+  "layers": {
+    "n": 40,
+    "groups": [
+      {
+        "from": 0,
+        "to": 19,
+        "attn": "mqa_csa2",
+        "ffn": "deepseek_moe",
+        "note": "编码器层 0–19（CED causal encoder）：shared-KV MQA + 滑动窗口 128 + CSA2/压缩；FFN 为 MoE（1 共享 + 384 路由，top-6）"
+      },
+      {
+        "from": 20,
+        "to": 39,
+        "attn": "mqa_csa2",
+        "ffn": "deepseek_moe",
+        "note": "解码器层 20–39（CED decoder）：全局 KV 由 encoder 末层投影；分层稀疏索引器限定候选池；FFN 同为 MoE"
+      }
+    ]
+  },
+  "attn_specs": {
+    "mqa_csa2": {
+      "label": "shared-KV MQA + CSA2 压缩稀疏注意力",
+      "desc": "只有 1 个共享 KV 头、head_dim 512，K=V，广播给 64 个 Q 头；Q 走 q_lora_rank=1280 低秩 + unweighted RMSNorm，partial RoPE 只作用于前 64 维（主分支 θ=10000）。每层再叠加 sliding_window=128 的局部窗口与 CSA2 压缩分支：把每 m 个 token 压成 1 个压缩 KV 条目，并由 lightning indexer（32 头 ×128、top-512）选出要看的压缩条目；压缩分支用 compress_rope_theta=160000 + YaRN×16。输出走分组低秩投影（o_groups=8 × o_lora_rank=1024）。注意：CSA2 的 Full/Reindex/Reuse 跨层复用与分层候选池由 HF config/README 描述，通用代码实现的是 V4 的 CSA/HCA。",
+      "tex": "\\mathbf{c}_q=\\mathrm{RMSNorm}(W_{qa}\\mathbf{x})\\in\\mathbb{R}^{1280},\\quad \\mathbf{q}=W_{qb}\\mathbf{c}_q\\in\\mathbb{R}^{64\\times512}\n\\mathbf{k}=\\mathbf{v}=\\mathrm{RMSNorm}(W_{kv}\\mathbf{x})\\in\\mathbb{R}^{512},\\quad \\mathbf{o}=\\mathrm{softmax}\\!\\Big(\\frac{\\mathbf{q}\\,\\mathbf{k}^{\\top}}{\\sqrt{512}}+\\mathbf{s}+M\\Big)\\mathbf{v}\n\\mathbf{C}_w=\\sum_{j\\in w}\\mathrm{softmax}(\\mathbf{z}_j+\\mathbf{b})_j\\odot\\mathbf{c}_j,\\quad \\mathcal{I}_t=\\mathrm{TopK}_{512}\\Big(\\sum_h w_{t,h}\\mathrm{ReLU}(\\mathbf{q}^I_{t,h}\\cdot(\\mathbf{K}^{I})^{\\top})\\Big)\n\\mathrm{out}=W_{ob}\\,\\mathrm{Concat}_{g=1}^{8}\\big(W_{oa,g}\\,\\mathbf{o}_g\\big),\\qquad o_{lora}=1024,\\; o_{groups}=8",
+      "code": "```python\n# reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:758-876（通用 V4 attention）\nself.num_key_value_groups = config.num_attention_heads   # 单 KV 头广播到全部 Q 头\nself.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)\nself.q_a_norm = DeepseekV4RMSNorm(config.q_lora_rank, eps=config.rms_norm_eps)\nself.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)\nself.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)   # 1 个 KV 头\nself.kv_norm = DeepseekV4RMSNorm(self.head_dim, eps=config.rms_norm_eps)\nself.sinks = nn.Parameter(torch.empty(self.num_heads))                    # per-head learnable sink\nself.compressor = COMPRESSOR_CLASSES[self.layer_type](config) if self.layer_type != \"sliding_attention\" else None\n# forward:\nq = apply_rotary_pos_emb(q, cos, sin)          # partial RoPE（前 64 维）\nkv = apply_rotary_pos_emb(kv, cos, sin); kv = past_key_values.update(kv, kv, self.layer_idx)[0]\nif self.compressor is not None:\n    compressed_kv, block_bias = self.compressor(hidden_states, q_residual, position_ids, past_key_values, self.layer_idx)\n    kv = torch.cat([kv, compressed_kv], dim=2)\n```"
+    }
+  },
+  "ffn_specs": {
+    "deepseek_moe": {
+      "label": "DeepSeekMoE（1 共享 + 384 路由, top-6）",
+      "desc": "V4.1 每一层都是 MoE（无 dense 层）。每 token 用 sqrtsoftplus 打分选 top-6 路由专家（noaux_tc 选择偏置只影响选谁），top-k 权重归一化后乘 routed_scaling_factor=1.5；另有一个对所有 token 恒激活的共享专家（DeepseekV4MLP）。路由专家/共享专家的 gate/up 预激活用 swiglu_limit=10 截断。通用代码里还有 hash_moe 层（前若干层按 token id 固定查表路由）。",
+      "tex": "\\{e_1,\\dots,e_6\\}=\\mathrm{TopK}_6\\big(\\mathrm{sqrtsoftplus}(W_g\\mathbf{x})+\\mathbf{b}\\big),\\quad \\tilde{s}_i=\\mathrm{sqrtsoftplus}(W_g\\mathbf{x})_{e_i}\n\\mathrm{MoE}(\\mathbf{x})=\\sum_{i=1}^{6}\\frac{\\tilde{s}_i}{\\sum_j\\tilde{s}_j}\\,\\mathrm{Expert}_{e_i}\\!\\big(\\mathrm{clip}(\\mathbf{x})\\big)\\cdot 1.5\\;+\\;\\mathrm{SharedMLP}(\\mathbf{x})\n\\mathrm{clip}(\\mathbf{x})=\\mathrm{clamp}(\\mathbf{x},-10,10)\\quad(\\texttt{swiglu\\_limit})",
+      "code": "```python\n# reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:1071-1140（router + MoE）\nself.score_fn = ACT2FN[config.scoring_func]          # sqrtsoftplus\nself.e_score_correction_bias = nn.Buffer(torch.zeros(self.num_experts))  # aux-loss-free\nlogits = F.linear(flat, self.weight)\nscores = self.score_fn(logits)\nindices = torch.topk(scores + self.e_score_correction_bias, self.top_k, dim=-1, sorted=False).indices\nweights = scores.gather(1, indices)\nweights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-20)\nreturn logits, weights * self.routed_scaling_factor, indices\n# shared expert：\nreturn routed + self.shared_experts(residual)\n```"
+    }
+  },
+  "extra_specs": [
+    {
+      "label": "RMSNorm（eps=1e-20）",
+      "tex": "\\mathrm{RMSNorm}(\\mathbf{x})=\\frac{\\mathbf{x}}{\\sqrt{\\frac{1}{d}\\sum_{i=1}^{d}x_i^{2}+\\epsilon}}\\odot\\boldsymbol{\\gamma},\\qquad \\epsilon=10^{-20}",
+      "code": "```python\n# reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:46-64\nclass DeepseekV4RMSNorm(nn.Module):\n    def __init__(self, hidden_size, eps: float = 1e-6) -> None:\n        self.weight = nn.Parameter(torch.ones(hidden_size))\n        self.variance_epsilon = eps\n    def forward(self, hidden_states):\n        input_dtype = hidden_states.dtype\n        hidden_states = hidden_states.to(torch.float32)\n        variance = hidden_states.pow(2).mean(-1, keepdim=True)\n        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)\n        return self.weight * hidden_states.to(input_dtype)\n```"
+    },
+    {
+      "label": "双 RoPE：主分支 θ=10000 / 压缩分支 θ=160000 + YaRN×16",
+      "desc": "主（sliding）分支用 θ=10000 的 partial RoPE（只前 64 维）；CSA/HCA 压缩分支用 compress_rope_theta=160000，并配 YaRN（factor 16、original 65536）。注意力输出还会以 -sin 做一次共轭旋转，使 KV 贡献只依赖相对距离。",
+      "tex": "\\mathbf{q}_t\\leftarrow\\mathrm{RoPE}(\\mathbf{q}_t;\\theta_{\\text{main}}),\\quad \\mathbf{k}_s\\leftarrow\\mathrm{RoPE}(\\mathbf{k}_s;\\theta_{\\text{compress}})\n\\theta_{\\text{main}}=10000,\\quad \\theta_{\\text{compress}}=160000\\;(\\text{YaRN}\\ \\times16)",
+      "code": "```python\n# reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:75-160,822-825,865-871\nq = apply_rotary_pos_emb(q, cos, sin)\nkv = apply_rotary_pos_emb(kv, cos, sin)\n# K=V，输出 rope 切片用 -sin 共轭旋转：\nattn_output = apply_rotary_pos_emb(attn_output.transpose(1, 2), cos, -sin).transpose(1, 2)\n```"
+    },
+    {
+      "label": "MoE 路由选择偏置（aux-loss-free, sqrtsoftplus）",
+      "desc": "e_score_correction_bias 只加在 top-k 选择上，路由权重仍用未加偏置的 sqrtsoftplus 分数；配置 topk_method=noaux_tc、norm_topk_prob=true、routed_scaling_factor=1.5。",
+      "tex": "e=\\mathrm{TopK}_6\\big(\\mathrm{sqrtsoftplus}(W_g\\mathbf{x})+\\mathbf{b}\\big),\\qquad \\mathrm{weight}=\\frac{\\mathrm{sqrtsoftplus}(W_g\\mathbf{x})_e}{\\sum_{e'}\\mathrm{sqrtsoftplus}(W_g\\mathbf{x})_{e'}}",
+      "code": "```python\n# reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:1082-1089\nscores = self.score_fn(logits)\nindices = torch.topk(scores + self.e_score_correction_bias, self.top_k, dim=-1, sorted=False).indices\nweights = scores.gather(1, indices)\nweights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-20)\nreturn logits, weights * self.routed_scaling_factor, indices\n```"
+    },
+    {
+      "label": "mHC（Manifold-Constrained Hyper-Connections）",
+      "desc": "残差变成 hc_mult=4 条流 [B,S,4,D]。进块前 pre 塌缩、出块后 post 展开、comb 混合输入/输出流；comb 用 Sinkhorn-Knopp 迭代（hc_sinkhorn_iters=20）投影为双随机矩阵。代码按『单遍 mHC』实现（一次投影 + 20 次归一化）。",
+      "tex": "\\mathrm{pre}=\\sigma(W_p\\mathbf{x})+\\epsilon,\\quad \\mathrm{post}=2\\,\\sigma(W_o\\mathbf{x}),\\quad \\mathrm{comb}=\\mathrm{softmax}(W_c\\mathbf{x})+\\epsilon\n\\mathrm{comb}\\leftarrow\\mathrm{Sinkhorn\\text{-}Knopp}_{20}(\\mathrm{comb})\\ \\text{（双随机，行/列和}=1\\text{）}\n\\mathbf{H}'=\\mathbf{H}\\,\\mathrm{comb}^{\\top}+\\mathrm{post}\\odot\\mathrm{Block}(\\mathbf{H}\\,\\mathrm{pre})",
+      "code": "```python\n# reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:879-990,1143-1191\npre = torch.sigmoid(pre_w * pre_scale + pre_b) + self.hc_eps\npost = 2 * torch.sigmoid(post_w * post_scale + post_b)\ncomb = torch.softmax(comb_w * comb_scale + comb_b, dim=-1) + self.hc_eps\ncomb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)\nfor _ in range(self.hc_sinkhorn_iters - 1):\n    comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)\n    comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)\ncollapsed = (pre.unsqueeze(-1) * hidden_streams).sum(dim=2).to(hidden_streams.dtype)\n# DecoderLayer：\npost, comb, collapsed = self.attn_hc(hidden_states)\nattn_output, _ = self.self_attn(self.input_layernorm(collapsed), **kwargs)\nhidden_states = post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2) + torch.matmul(comb.to(dtype).transpose(-1, -2), hidden_states)\n```"
+    },
+    {
+      "label": "CED：Causal Encoder-Decoder（V4.1 专属，参考代码未实现）",
+      "desc": "40 层 = 20 层 causal encoder + 20 层 decoder；decoder 的全局 KV 从 encoder 末层 hidden state 投影，而非逐 decoder 层自算，从而 prefill 只激活约 8B、decode 约 16B。通用 `modeling_deepseek_v4.py` 是单一 43 层堆栈，未做编解码拆分。",
+      "tex": "\\mathbf{K}^{\\text{dec}},\\mathbf{V}^{\\text{dec}}=\\mathrm{Proj}\\!\\big(\\mathbf{H}^{\\text{enc}}_{\\text{last}}\\big)\\ \\text{（HF config/README 描述）}"
+    },
+    {
+      "label": "CSA2 三模式 + 分层候选池（V4.1 专属）",
+      "desc": "每层静态指定 Full / Reindex / Reuse：跨层共享主 KV 与 indexer K、复用 top-k 索引；decoder 深层只在首个 Full 层构造的候选池（candidate_topk_blocks=2048 × block 8）内索引。通用代码实现的是 V4 的 CSA/HCA 压缩与 Lightning Indexer，不含三模式/候选池。",
+      "tex": "\\mathrm{Mode}(\\ell)\\in\\{\\text{Full},\\text{Reindex},\\text{Reuse}\\},\\qquad \\mathcal{I}^{\\text{deep}}_t\\subseteq\\mathrm{Pool}_{2048}(\\text{first Full layer})"
+    },
+    {
+      "label": "Engram 条件记忆（196B，V4.1 专属）",
+      "desc": "196B 参数的条件记忆：按 token 的 n-gram（max 4）稀疏查表，在 engram_layer_ids=[1,14] 注入，与主干互补。通用建模代码未实现。",
+      "tex": "\\mathbf{m}=\\mathrm{Engram}\\!\\big(\\mathrm{ngram}(\\text{tokens})\\big),\\qquad \\mathbf{h}\\leftarrow\\mathbf{h}+\\mathbf{m}"
+    },
+    {
+      "label": "DSpark 推测解码（V4.1 专属）+ MTP ×3",
+      "desc": "DSpark 半自回归草稿（block 5）+ 置信度调度验证，目标层 37–39；配 num_nextn_predict_layers=3 的 MTP 头。通用建模代码不实例化 MTP（`_keys_to_ignore_on_load_unexpected = [r\"(^|\\.)mtp\\..*\"]`）也未实现 DSpark。",
+      "tex": "n_{\\text{nextn}}=3,\\qquad \\text{DSpark block}=5,\\ \\text{target layers}=37\\!-\\!39"
+    },
+    {
+      "label": "DeepSeek-ViT 视觉编码器（V4.1 专属）",
+      "desc": "32 层、hidden 1024、16 头、patch 14、3×3 pixel-unshuffle、downsample 3，2D-RoPE；经 2 层 MLP 投到 5120 维，image_token_id=129264。通用文本建模代码不含视觉塔。",
+      "tex": "\\mathbf{z}_v=\\mathrm{MLP}_2\\!\\big(\\mathrm{DeepSeek\\text{-}ViT}(\\mathbf{I})\\big)\\in\\mathbb{R}^{N_v\\times5120}"
+    },
+    {
+      "label": "FP8（32×32）+ FP4 专家/KV",
+      "desc": "权重 FP8（32×32 分块、ue8m0）；专家权重与主 KV 用 FP4（E2M1，每 16 通道一个 E4M3 缩放），全局 KV 约 890 B/token。是部署/训练精度方案，不改变计算图。",
+      "tex": "w_{\\text{deq}}=w_{\\mathrm{fp8}}\\odot s_{32\\times32},\\qquad \\mathrm{KV}_{\\mathrm{fp4}}\\approx890\\ \\text{B/token}"
+    }
+  ],
+  "code": [
+    {
+      "name": "shared-KV MQA 注意力（通用 V4 实现）",
+      "ref": "reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:758-876",
+      "lang": "python",
+      "code": "self.num_key_value_groups = config.num_attention_heads   # 单 KV 头广播到全部 Q 头\nself.head_dim = config.head_dim                          # 512\nself.sliding_window = config.sliding_window             # 128\nself.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)   # 1280\nself.q_a_norm = DeepseekV4RMSNorm(config.q_lora_rank, eps=config.rms_norm_eps)\nself.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)\nself.q_b_norm = DeepseekV4UnweightedRMSNorm(eps=config.rms_norm_eps)\nself.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)          # 唯一 KV 头\nself.kv_norm = DeepseekV4RMSNorm(self.head_dim, eps=config.rms_norm_eps)\nself.o_a_proj = DeepseekV4GroupedLinear(self.num_heads * self.head_dim // config.o_groups, config.o_groups * config.o_lora_rank, config.o_groups)\nself.o_b_proj = nn.Linear(config.o_groups * config.o_lora_rank, config.hidden_size, bias=False)\nself.sinks = nn.Parameter(torch.empty(self.num_heads))\nself.compressor = COMPRESSOR_CLASSES[self.layer_type](config) if self.layer_type != \"sliding_attention\" else None\n# forward（K=V，partial RoPE，压缩 KV 拼到 KV 轴）：\nq = apply_rotary_pos_emb(self.q_b_norm(q), cos, sin)\nkv = apply_rotary_pos_emb(self.kv_norm(self.kv_proj(hidden_states)), cos, sin)\nkv = past_key_values.update(kv, kv, self.layer_idx)[0]\nif self.compressor is not None:\n    compressed_kv, block_bias = self.compressor(hidden_states, q_residual, position_ids, past_key_values, self.layer_idx)\n    kv = torch.cat([kv, compressed_kv], dim=2)"
+    },
+    {
+      "name": "CSA 压缩 + Lightning Indexer（通用 V4 实现）",
+      "ref": "reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:592-706（CSA）, 465-589（Indexer）",
+      "lang": "python",
+      "code": "# CSA：每 compress_rate 个 token 压成 1 个条目（Ca/Cb 重叠布局 + softmax 门控）\ncompressed = self.kv_norm((new_kv * new_gate.softmax(dim=2, dtype=torch.float32).to(new_kv.dtype)).sum(dim=2))\ncos, sin = self.rotary_emb(compressed, position_ids=positions, layer_type=self.rope_layer_type)\ncompressed = apply_rotary_pos_emb(compressed.unsqueeze(1), cos, sin).squeeze(1)\ntop_k_indices = self.indexer(hidden_states, q_residual, position_ids, past_key_values, layer_idx)\nvalid = top_k_indices >= 0\nsafe_indices = torch.where(valid, top_k_indices, torch.full_like(top_k_indices, compressed_len))\nblock_bias = compressed_kv.new_full((batch, 1, seq_len, compressed_len + 1), float(\"-inf\"))\nblock_bias.scatter_(-1, safe_indices.unsqueeze(1), 0.0)\n# Indexer 打分：\nscores = torch.matmul(q.float(), compressed_kv.transpose(-1, -2).float().unsqueeze(1))\nscores = F.relu(scores) * self.softmax_scale\nweights = self.weights_proj(hidden_states).float() * self.weights_scaling\nreturn (scores * weights.unsqueeze(-1)).sum(dim=2)"
+    },
+    {
+      "name": "HCA 强压缩注意力（通用 V4 实现）",
+      "ref": "reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:365-446",
+      "lang": "python",
+      "code": "self.compress_rate = config.compress_rates[\"heavily_compressed_attention\"]   # m'=128\nself.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)\nself.gate_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)\nself.position_bias = nn.Parameter(torch.empty(self.compress_rate, self.head_dim))\nself.kv_norm = DeepseekV4RMSNorm(self.head_dim, eps=config.rms_norm_eps)\n# forward：一个窗口 -> 一个压缩条目\ncompressed = self.kv_norm((chunk_kv * chunk_gate.softmax(dim=2, dtype=torch.float32).to(chunk_kv.dtype)).sum(dim=2))\npositions = torch.arange(n_windows) * self.compress_rate + first_window_position\ncos, sin = self.rotary_emb(compressed, position_ids=positions, layer_type=self.rope_layer_type)\ncompressed = apply_rotary_pos_emb(compressed.unsqueeze(1), cos, sin).squeeze(1)"
+    },
+    {
+      "name": "mHC Hyper-Connection（单遍 + Sinkhorn 投影）",
+      "ref": "reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:879-990",
+      "lang": "python",
+      "code": "self.hc_mult = config.hc_mult                 # 4\nself.hc_sinkhorn_iters = config.hc_sinkhorn_iters  # 20\nconcatenated_weights_size = (2 + self.hc_mult) * self.hc_mult\nself.fn = nn.Parameter(torch.empty(concatenated_weights_size, self.hc_mult * config.hidden_size))\nself.base = nn.Parameter(torch.empty(concatenated_weights_size))\nself.scale = nn.Parameter(torch.empty(3))\n# forward:\npre_w, post_w, comb_w = flattened.split([hc, hc, hc * hc], dim=-1)\npre = torch.sigmoid(pre_w * pre_scale + pre_b) + self.hc_eps\npost = 2 * torch.sigmoid(post_w * post_scale + post_b)\ncomb = torch.softmax(comb_w * comb_scale + comb_b, dim=-1) + self.hc_eps\ncomb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)\nfor _ in range(self.hc_sinkhorn_iters - 1):\n    comb = comb / (comb.sum(dim=-1, keepdim=True) + self.hc_eps)\n    comb = comb / (comb.sum(dim=-2, keepdim=True) + self.hc_eps)\ncollapsed = (pre.unsqueeze(-1) * hidden_streams).sum(dim=2).to(hidden_streams.dtype)\nreturn post, comb, collapsed"
+    },
+    {
+      "name": "MoE：sqrtsoftplus 路由 + 384 专家 + 共享专家",
+      "ref": "reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:1012-1140",
+      "lang": "python",
+      "code": "self.score_fn = ACT2FN[config.scoring_func]   # sqrtsoftplus\nself.e_score_correction_bias = nn.Buffer(torch.zeros(self.num_experts))   # aux-loss-free\nlogits = F.linear(flat, self.weight)\nscores = self.score_fn(logits)\nindices = torch.topk(scores + self.e_score_correction_bias, self.top_k, dim=-1, sorted=False).indices\nweights = scores.gather(1, indices)\nweights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-20)\nreturn logits, weights * self.routed_scaling_factor, indices\n# experts（gate/up 截断到 ±swiglu_limit，SiLU）：\ngate, up = gate_up.chunk(2, dim=-1)\ngate = gate.clamp(max=self.limit); up = up.clamp(min=-self.limit, max=self.limit)\nreturn self.act_fn(gate) * up\n# SparseMoeBlock：\nrouted = self.experts(flat, indices, weights).view(batch, seq_len, hidden_dim)\nreturn routed + self.shared_experts(residual)"
+    },
+    {
+      "name": "DecoderLayer：mHC 残差包裹 attn / MoE",
+      "ref": "reference/DeepSeek-V4.1/hf_transformers/modeling_deepseek_v4.py:1143-1191",
+      "lang": "python",
+      "code": "self.self_attn = DeepseekV4Attention(config, layer_idx)\nself.mlp = DeepseekV4SparseMoeBlock(config, layer_idx)\nself.input_layernorm = DeepseekV4RMSNorm(config.hidden_size, eps=config.rms_norm_eps)\nself.post_attention_layernorm = DeepseekV4RMSNorm(config.hidden_size, eps=config.rms_norm_eps)\nself.attn_hc = DeepseekV4HyperConnection(config)\nself.ffn_hc = DeepseekV4HyperConnection(config)\n# forward（hidden_states: [B, S, hc_mult, hidden]）：\npost, comb, collapsed = self.attn_hc(hidden_states)\nattn_output, _ = self.self_attn(self.input_layernorm(collapsed), **kwargs)\nhidden_states = post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2) + torch.matmul(comb.to(dtype).transpose(-1, -2), hidden_states)\npost, comb, collapsed = self.ffn_hc(hidden_states)\nmlp_output = self.mlp(self.post_attention_layernorm(collapsed), input_ids=input_ids)\nreturn post.to(dtype).unsqueeze(-1) * mlp_output.unsqueeze(-2) + torch.matmul(comb.to(dtype).transpose(-1, -2), hidden_states)"
+    }
+  ],
+  "papers": [
+    {
+      "title": "DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression (HF model card)",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash"
+    },
+    {
+      "title": "DeepSeek-V4.1-Flash (HF config.json)",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/config.json"
+    }
+  ],
+  "diff_mini": "DeepSeek-V4.1 已不是同一档改造，它在 mini-llm-lab 的骨架上做了四层结构性重写：\n\n- **注意力：GQA → shared-KV MQA + CSA2 压缩稀疏**。只有 1 个 KV 头（head_dim 512）广播给 64 个 Q 头，Q/输出走低秩投影（1280 / 8 组 ×1024）；每层叠加 sliding_window=128，并用压缩分支把每 m 个 token 压成 1 个条目、由 32 头 lightning indexer 选 top-512。我们连 GQA 的 KV 都按全量存，没有压缩/稀疏。\n- **架构：decoder-only → CED 编码器-解码器**。40 层拆成 20+20，decoder 全局 KV 由 encoder 末层投影，prefill 只激活约 8B、decode 16B；还有 1M 上下文与 DeepSeek-ViT 原生多模态。\n- **残差：单路 → mHC**。4 条流、Sinkhorn(20) 约束的双随机混合矩阵，取代定式 `x = x + f(norm(x))`。\n- **FFN/其他**：全层 MoE（1 共享 + 384 路由、top-6、sqrtsoftplus、noaux_tc、routed_scaling 1.5、swiglu_limit 10）；外加 196B Engram 条件记忆、DSpark 推测解码与 3 层 MTP、FP8(32×32)+FP4 专家/KV。\n\n一句话：**V4.1 = V3 的 MLA/MoE 继续演进到 MQA+CSA2 + CED + mHC + Engram + DSpark，并原生多模态、1M 上下文。**"
+}

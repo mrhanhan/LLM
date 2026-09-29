@@ -1,0 +1,368 @@
+# Kimi-K2 · 架构说明（逐层）
+
+> Moonshot AI · 发布 2025-07 · moonshotai/Kimi-K2（README + docs/deploy_guidance.md）+ HF `moonshotai/Kimi-K2-Instruct` config.json；MLA / DeepSeekMoE 参考实现复用 `reference/DeepSeek-V3/inference/model.py`（K2 README 声明复用 DeepSeekV3CausalLM 架构）
+
+**技术定位**：1T 总参 / 32B 激活的稀疏 MoE 大模型：61 层，注意力用 MLA（KV 缓存压成一个 512 维 latent + 64 维 rope key），FFN 用 DeepSeekMoE（1 个共享专家 + 384 个路由专家、每 token 激活 8 个），以 MuonClip 优化器在 15.5T token 上零训练不稳定，主打 agentic 工具调用。
+
+## 1. 参数与配置
+
+| 项 | 值 |
+|---|---|
+| 总参数 | 1T |
+| 激活参数 | 32B |
+| 层数 | 61 |
+| hidden | 7168 |
+| Q 头 | 64 |
+| KV 头 | 64（MLA：KV 压成 512 维 latent + 64 维 rope） |
+| head_dim | 192（qk = 128 nope + 64 rope）/ v = 128 |
+| FFN/MoE 中间维 | dense 18432；MoE 每专家 2048 |
+| 词表 | 163840（160K） |
+| 上下文 | 131072（128K；K2-Thinking 版 256K） |
+| 权重共享 | False |
+
+**完整配置**：
+
+| 字段 | 值 |
+|---|---|
+| num_hidden_layers | 61 |
+| hidden_size | 7168 |
+| num_attention_heads | 64 |
+| num_key_value_heads | 64（MLA） |
+| q_lora_rank | 1536 |
+| kv_lora_rank | 512 |
+| qk_nope_head_dim | 128 |
+| qk_rope_head_dim | 64 |
+| v_head_dim | 128 |
+| intermediate_size | 18432（dense 层） |
+| moe_intermediate_size | 2048（每专家） |
+| n_routed_experts | 384 |
+| n_shared_experts | 1 |
+| num_experts_per_tok | 8 |
+| first_k_dense_replace | 1（仅第 0 层为 dense FFN） |
+| moe_layer_freq | 1 |
+| n_group / topk_group | 1 / 1 |
+| scoring_func | sigmoid（路由打分） |
+| topk_method | noaux_tc |
+| routed_scaling_factor | 2.827 |
+| norm_topk_prob | true |
+| hidden_act | silu（SwiGLU） |
+| rms_norm_eps | 1e-6 |
+| rope_theta | 50000 |
+| rope_scaling | YaRN，factor 32，原长 4096 |
+| max_position_embeddings | 131072 |
+| num_nextn_predict_layers | 0（未启用 MTP） |
+| tie_word_embeddings | false |
+| vocab_size | 163840 |
+| quantization | FP8 e4m3，128×128 block（Block-FP8 权重） |
+
+## 2. 技术方案与关键创新
+
+**1. MLA 多头潜在注意力**　不缓存每头 K/V，而是把 KV 联合压成一个 512 维 latent（c_kv），另加一个 64 维 decoupled rope key。每 token KV 缓存从 64×(192+128) 降到 512+64=576 维，配合低秩 Q（1536）大幅省显存。与 DeepSeek-V3 同一套 MLA 写法。
+
+**2. DeepSeekMoE：384 路由 + 1 共享**　每层 1 个共享专家（所有 token 都过）+ 384 个路由专家，每 token 只激活 top-8。路由用 sigmoid 打分，配 aux-loss-free 的选择偏置 e_score_correction_bias，只影响 argmax 选谁、不影响路由权重，避免传统 aux loss 干扰主任务。
+
+**3. MuonClip 优化器**　在 1T 规模上使用 Muon，并用 QK-clip 类技术抑制注意力 logits 爆炸，使 15.5T token 预训练零 loss spike。这是训练侧创新（非前向结构）。
+
+**4. Agentic Intelligence**　面向工具调用、推理与自主问题求解后训练，原生支持 tool-call 解析（inference engine 提供 kimi_k2 parser），在 SWE-bench / Tau2 / TerminalBench 等 agentic 基准上表现突出。
+
+**5. 前 1 层 dense，其余 MoE**　first_k_dense_replace=1：仅第 0 层用普通 SwiGLU dense FFN，第 1–60 层全部换成 MoE。dense 层的注意力仍是 MLA。
+
+## 3. 层级结构（可视化）
+
+```mermaid
+flowchart TD
+  IN["输入 token B×T"] --> EMB["词嵌入"]
+  EMB --> L0_0["层 0–0 ×1<br/>MLA（Multi-head Latent Attention）<br/>SwiGLU（dense）"]
+  L0_0 --> L1_60["层 1–60 ×60<br/>MLA（Multi-head Latent Attention）<br/>DeepSeekMoE（1 共享 + 384 路由, top-8）"]
+  L1_60 --> NORM["最终 RMSNorm"] --> HEAD["lm_head → logits"]
+```
+
+## 4. 逐层清单（共 61 层）
+
+| 层 | Attention | FFN/MoE | 说明 |
+|---|---|---|---|
+| 0 | MLA（Multi-head Latent Attention） | SwiGLU（dense） | 第 0 层：dense FFN（first_k_dense_replace=1） |
+| 1 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 2 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 3 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 4 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 5 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 6 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 7 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 8 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 9 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 10 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 11 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 12 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 13 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 14 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 15 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 16 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 17 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 18 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 19 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 20 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 21 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 22 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 23 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 24 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 25 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 26 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 27 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 28 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 29 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 30 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 31 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 32 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 33 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 34 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 35 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 36 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 37 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 38 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 39 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 40 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 41 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 42 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 43 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 44 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 45 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 46 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 47 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 48 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 49 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 50 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 51 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 52 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 53 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 54 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 55 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 56 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 57 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 58 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 59 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+| 60 | MLA（Multi-head Latent Attention） | DeepSeekMoE（1 共享 + 384 路由, top-8） | 第 1–60 层：MLA + MoE（1 共享 + 384 路由，top-8） |
+
+## 5. 关键模块：数学公式与代码
+
+### 注意力 · MLA（Multi-head Latent Attention）
+
+低秩 Q 投影 + KV 联合低秩压缩。Q 走 wq_a→q_norm→wq_b；KV 只算 c_kv=w kv_a→kv_norm 与一个 decoupled 的 rope key k_pe，RoPE 只作用在 64 维 rope 切片（partial / decoupled）。推理时可把 q_nope 吸收进 wkv_b（absorb 写法），KV 缓存只剩 512+64 维。Kimi K2 复用 DeepSeek-V3 的 MLA 实现。
+
+$$
+\mathbf{c}_q=\mathrm{RMSNorm}\!\big(W_{qa}\mathbf{x}\big),\quad \mathbf{q}=W_{qb}\,\mathbf{c}_q\in\mathbb{R}^{n_h\times(d_{nope}+d_{rope})}
+$$
+
+$$
+\mathbf{c}_{kv}=\mathrm{RMSNorm}\!\big(W_{kva}\mathbf{x}\big)\in\mathbb{R}^{512},\quad \mathbf{k}_{pe}=W_{kr}\mathbf{x}\in\mathbb{R}^{64}
+$$
+
+$$
+\mathbf{k}_{nope}=W_{kvb}\,\mathbf{c}_{kv},\quad \mathbf{v}=W_{kvb}\,\mathbf{c}_{kv}
+$$
+
+$$
+\mathrm{MLA}(\mathbf{x})=\mathrm{softmax}\!\Big(\frac{[\mathbf{q}_{nope};\mathbf{q}_{pe}]\,[\mathbf{k}_{nope};\mathbf{k}_{pe}]^{\top}}{\sqrt{d_{nope}+d_{rope}}}+M\Big)\,\mathbf{v}
+$$
+
+```python
+# reference/DeepSeek-V3/inference/model.py:427-444（K2 复用同一 MLA 风格）
+self.wq_a = Linear(self.dim, self.q_lora_rank)
+self.q_norm = RMSNorm(self.q_lora_rank)
+self.wq_b = ColumnParallelLinear(self.q_lora_rank, self.n_heads * self.qk_head_dim)
+self.wkv_a = Linear(self.dim, self.kv_lora_rank + self.qk_rope_head_dim)
+self.kv_norm = RMSNorm(self.kv_lora_rank)
+self.wkv_b = ColumnParallelLinear(self.kv_lora_rank, self.n_heads * (self.qk_nope_head_dim + self.v_head_dim))
+# 推理缓存：只存 512 维 latent + 64 维 rope key
+self.register_buffer("kv_cache", torch.zeros(..., self.kv_lora_rank), persistent=False)
+self.register_buffer("pe_cache", torch.zeros(..., self.qk_rope_head_dim), persistent=False)
+```
+
+### 前馈/MoE · SwiGLU（dense）
+
+仅第 0 层的普通门控前馈。与 mini-llm-lab 的 SwiGLU 一致。
+
+$$
+\mathrm{SwiGLU}(\mathbf{x})=W_{down}\big(\mathrm{SiLU}(W_{gate}\mathbf{x})\odot W_{up}\mathbf{x}\big)
+$$
+
+### 前馈/MoE · DeepSeekMoE（1 共享 + 384 路由, top-8）
+
+每 token 用 sigmoid 打分选 top-8 路由专家，权重按 top-k 归一化再乘 routed_scaling_factor=2.827；另有一个对所有 token 恒激活的共享专家（intermediate = 1×2048）。选择用 noaux_tc：加一个 float32 的选择偏置 e_score_correction_bias，只改变选谁、不改变权重。
+
+$$
+\{e_1,\dots,e_8\}=\mathrm{TopK}\big(\mathrm{sigmoid}(W_g\mathbf{x})+\mathbf{b}\big),\quad \tilde{s}_i=\mathrm{sigmoid}(W_g\mathbf{x})_{e_i}
+$$
+
+$$
+\mathrm{MoE}(\mathbf{x})=\sum_{i=1}^{8}\frac{\tilde{s}_i}{\sum_j\tilde{s}_j}\,\mathrm{Expert}_{e_i}(\mathbf{x})\cdot 2.827\;+\;\mathrm{SharedMLP}(\mathbf{x})
+$$
+
+```python
+# reference/DeepSeek-V3/inference/model.py:563-597（Gate）
+self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
+self.bias = nn.Parameter(torch.empty(args.n_routed_experts, dtype=torch.float32)) if self.dim == 7168 else None
+# ...
+original_scores = scores = scores.sigmoid()
+if self.bias is not None:
+    scores = scores + self.bias          # aux-loss-free：只影响选择
+indices = torch.topk(scores, self.topk, dim=-1)[1]
+weights = original_scores.gather(1, indices)
+weights /= weights.sum(dim=-1, keepdim=True)
+weights *= self.route_scale
+```
+
+### RMSNorm
+
+$$
+\mathrm{RMSNorm}(\mathbf{x})=\frac{\mathbf{x}}{\sqrt{\frac{1}{d}\sum_{i=1}^{d}x_i^{2}+\epsilon}}\odot\boldsymbol{\gamma}
+$$
+
+```python
+# reference/DeepSeek-V3/inference/model.py:717-718
+self.attn_norm = RMSNorm(args.dim)
+self.ffn_norm = RMSNorm(args.dim)
+```
+
+### Partial / Decoupled RoPE
+
+只对 q/k 中 64 维的 rope 切片做旋转，128 维 nope 部分不旋转。θ=50000，长文叠加 YaRN（factor 32）。
+
+$$
+\mathbf{q}_{pe}=\mathrm{RoPE}(\mathbf{q}_{pe};\theta),\qquad \mathbf{k}_{pe}=\mathrm{RoPE}(\mathbf{k}_{pe};\theta),\qquad \theta=50000
+$$
+
+$$
+\mathrm{RoPE}(x_m,m)=\big(x^{(1)}\cos m\theta_i-x^{(2)}\sin m\theta_i,\; x^{(1)}\sin m\theta_i+x^{(2)}\cos m\theta_i\big)
+$$
+
+```python
+# reference/DeepSeek-V3/inference/model.py:466-470
+q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+q_pe = apply_rotary_emb(q_pe, freqs_cis)
+kv, k_pe = torch.split(kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+k_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis)
+```
+
+### MoE 路由选择偏置（aux-loss-free）
+
+偏置 b 为 float32，只加在『选 top-k』的打分上，路由权重仍用未加偏置的原始分数，因此不引入辅助损失。K2 的 topk_method=noaux_tc。
+
+$$
+e=\mathrm{TopK}_{k}\big(\mathrm{sigmoid}(W_g\mathbf{x})+\mathbf{b}\big),\qquad \mathrm{weight}=\frac{\mathrm{sigmoid}(W_g\mathbf{x})_e}{\sum_{e'}\mathrm{sigmoid}(W_g\mathbf{x})_{e'}}
+$$
+
+```python
+# reference/DeepSeek-V3/inference/model.py:581-594
+original_scores = scores
+if self.bias is not None:
+    scores = scores + self.bias
+indices = torch.topk(scores, self.topk, dim=-1)[1]
+weights = original_scores.gather(1, indices)
+```
+
+### MTP（多 token 预测）— 本版未启用
+
+Kimi-K2-Instruct 的 config 中 num_nextn_predict_layers=0，即发布的权重不带 MTP 头（与 DeepSeek-V3 的 1 层不同）。因此 K2 的层清单里没有额外预测层。
+
+$$
+n_{\text{nextn}}=0\;(\text{未启用})
+$$
+
+## 6. 张量形状流
+
+| 阶段 | 形状 | 说明 |
+|---|---|---|
+| 输入 token id | `[B, T]` | B=batch, T=序列长 |
+| 词嵌入 tok_emb | `[B, T, 7168]` | 不乘 sqrt(d) |
+| 层 0：MLA + dense SwiGLU | `[B, T, 7168]` | 残差流形状不变 |
+| 层 1–60：MLA + DeepSeekMoE(1+384, top-8) | `[B, T, 7168]` | 每层走 1 共享 + 8 路由专家 |
+| 最终 RMSNorm | `[B, T, 7168]` |  |
+| lm_head（不共享） | `[B, T, 163840]` | 输出 logits |
+
+## 7. 关键源码（引自 reference/）
+
+**MLA 定义（低秩 Q / KV 压缩）**　`reference/DeepSeek-V3/inference/model.py:412-444`
+
+```python
+self.q_lora_rank = args.q_lora_rank            # 1536
+self.kv_lora_rank = args.kv_lora_rank          # 512
+self.qk_nope_head_dim = args.qk_nope_head_dim  # 128
+self.qk_rope_head_dim = args.qk_rope_head_dim  # 64
+self.qk_head_dim = args.qk_nope_head_dim + args.qk_rope_head_dim
+self.v_head_dim = args.v_head_dim              # 128
+self.wq_a = Linear(self.dim, self.q_lora_rank)
+self.q_norm = RMSNorm(self.q_lora_rank)
+self.wq_b = ColumnParallelLinear(self.q_lora_rank, self.n_heads * self.qk_head_dim)
+self.wkv_a = Linear(self.dim, self.kv_lora_rank + self.qk_rope_head_dim)
+self.kv_norm = RMSNorm(self.kv_lora_rank)
+self.wkv_b = ColumnParallelLinear(self.kv_lora_rank, self.n_heads * (self.qk_nope_head_dim + self.v_head_dim))
+```
+
+**MLA 前向 + absorb（KV 缓存只剩 latent+rope）**　`reference/DeepSeek-V3/inference/model.py:463-495`
+
+```python
+q = self.wq_b(self.q_norm(self.wq_a(x)))
+q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+q_pe = apply_rotary_emb(q_pe, freqs_cis)
+kv = self.wkv_a(x)
+kv, k_pe = torch.split(kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
+q_nope = torch.einsum("bshd,hdc->bshc", q_nope, wkv_b[:, :self.qk_nope_head_dim])
+self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
+self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
+scores = (torch.einsum("bshc,btc->bsht", q_nope, self.kv_cache[:bsz, :end_pos]) +
+          torch.einsum("bshr,btr->bsht", q_pe, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
+```
+
+**MoE：共享专家 + 路由专家**　`reference/DeepSeek-V3/inference/model.py:656-693`
+
+```python
+self.gate = Gate(args)
+self.experts = nn.ModuleList([Expert(args.dim, args.moe_inter_dim) ... for i in range(self.n_routed_experts)])
+self.shared_experts = MLP(args.dim, args.n_shared_experts * args.moe_inter_dim)
+# forward:
+weights, indices = self.gate(x)
+for i in range(self.experts_start_idx, self.experts_end_idx):
+    idx, top = torch.where(indices == i)
+    y[idx] += expert(x[idx]) * weights[idx, top, None]
+z = self.shared_experts(x)
+return (y + z).view(shape)
+```
+
+**Block：前 k 层 dense，其余 MoE（注意力始终 MLA）**　`reference/DeepSeek-V3/inference/model.py:706-735`
+
+```python
+self.attn = MLA(args)
+self.ffn = MLP(args.dim, args.inter_dim) if layer_id < args.n_dense_layers else MoE(args)
+self.attn_norm = RMSNorm(args.dim)
+self.ffn_norm = RMSNorm(args.dim)
+# forward:
+x = x + self.attn(self.attn_norm(x), start_pos, freqs_cis, mask)
+x = x + self.ffn(self.ffn_norm(x))
+```
+
+## 8. 与 mini-llm-lab 的差异
+
+Kimi-K2 保留了我们熟悉的骨架（decoder-only、pre-norm 残差、RMSNorm、SwiGLU、RoPE），但把两个核心部件做了结构性替换：
+
+- **注意力从 GQA 换成 MLA**：我们的 KV 缓存按 `n_kv_head × head_dim` 存；K2 只存一个 512 维 latent + 64 维 rope key，约省 71× 显存。RoPE 也从『整段 head_dim 旋转』变成只旋转 64 维的 partial/decoupled 写法。
+- **FFN 从 dense SwiGLU 换成 DeepSeekMoE**：1 共享 + 384 路由、每 token top-8，并带一个只影响选择、不影响权重的 float32 选择偏置（aux-loss-free）。
+- **规模**：7168 维 × 61 层、词表 163840、上下文 128K，1T 总参 / 32B 激活——比我们的 ~192M 大 3 个数量级。
+- **不共享** 输入/输出嵌入（我们共享）；训练用 FP8 + MuonClip。
+
+一句话：**主干同源，K2 = 我们的骨架 + MLA 省 KV + MoE 省参数 + 规模/FP8/长文工程。**
+
+## 9. 3D 可视化
+
+启动可视化网页后，在「架构浏览器」视图选择本模型（id：`kimi-k2`），可三维查看每一层并点开公式/代码：
+
+```powershell
+& ".venv\Scripts\python.exe" viz/server.py   # 打开 http://127.0.0.1:7861 → 架构浏览器
+```
+
+## 10. 参考资料
+
+- [Kimi K2: Open Agentic Intelligence (arXiv:2507.20534)](https://arxiv.org/abs/2507.20534)
+- [moonshotai/Kimi-K2 (GitHub)](https://github.com/moonshotai/Kimi-K2)
+- [moonshotai/Kimi-K2-Instruct (HF config)](https://huggingface.co/moonshotai/Kimi-K2-Instruct)

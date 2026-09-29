@@ -1,0 +1,212 @@
+{
+  "id": "glm-4",
+  "family": "GLM",
+  "name": "GLM-4",
+  "vendor": "Zhipu AI / Z.ai (THUDM)",
+  "released": "2024-06",
+  "source": "THUDM/GLM-4 `README_20240605.md` / `README.md`（GLM-4-0414 系列）+ HF config `zai-org/glm-4-9b-chat-hf`（model_type=glm）与 `zai-org/GLM-4-32B-Base-0414`（model_type=glm4）+ HF transformers `modeling_glm.py` / `modeling_glm4.py`",
+  "summary": "ChatGLM 系 dense decoder-only：RMSNorm + SwiGLU + GQA，关键点是**部分旋转位置编码**（rotary 只作用于 head_dim 的一半），GLM-4-9B 用 32 个 Q 头对 2 个 KV 头（16:1）；GLM-4-32B-0414 换成 4 个 RMSNorm 的 sandwich 结构。",
+  "params": {
+    "total": "9B（另有 GLM-4-32B-0414 / Z1 32B / 9B 等）",
+    "active": "dense 全激活",
+    "layers": 40,
+    "hidden": 4096,
+    "heads": 32,
+    "kv_heads": 2,
+    "head_dim": 128,
+    "ffn": 13696,
+    "vocab": 151552,
+    "ctx": "8K（Base）→ 128K（Chat，YaRN）→ 1M（Chat-1M）",
+    "tie": "false（输入/输出嵌入不共享）"
+  },
+  "config_table": [
+    [
+      "模型",
+      "GLM-4-9B-Chat-HF（旗舰 9B）/ GLM-4-32B-Base-0414（32B）"
+    ],
+    [
+      "num_hidden_layers",
+      "40（9B）/ 61（32B）"
+    ],
+    [
+      "hidden_size",
+      "4096（9B）/ 6144（32B）"
+    ],
+    [
+      "num_attention_heads",
+      "32（9B）/ 48（32B）"
+    ],
+    [
+      "num_key_value_heads",
+      "2（GQA，16:1（9B）/ 24:1（32B））"
+    ],
+    [
+      "head_dim",
+      "128"
+    ],
+    [
+      "intermediate_size",
+      "13696（9B）/ 23040（32B）"
+    ],
+    [
+      "hidden_act",
+      "silu（SwiGLU 门控）"
+    ],
+    [
+      "partial_rotary_factor",
+      "0.5（rotary_dim = 64）"
+    ],
+    [
+      "rope_theta",
+      "10000"
+    ],
+    [
+      "rms_norm_eps",
+      "1.5625e-7（9B）/ 1e-5（32B）"
+    ],
+    [
+      "vocab_size",
+      "151552"
+    ],
+    [
+      "max_position_embeddings",
+      "131072（-HF，YaRN）/ 32768（32B-0414）"
+    ],
+    [
+      "tie_word_embeddings",
+      "false"
+    ],
+    [
+      "attention_bias",
+      "true（9B 的 q/k/v）/ false（32B）"
+    ],
+    [
+      "归一化布局",
+      "9B：pre-norm 2×RMSNorm；32B：sandwich 4×RMSNorm"
+    ],
+    [
+      "YaRN（长文）",
+      "factor 4.0, original_max 32768, type yarn"
+    ]
+  ],
+  "innovations": [
+    {
+      "title": "ChatGLM 系 dense 主干",
+      "text": "标准 decoder-only：每层 pre-norm 残差 + GQA 自注意力 + SwiGLU FFN，末层后一次 RMSNorm 再接 lm_head。结构上与我们手写 mini-llm-lab 同源，差别在下面几点。"
+    },
+    {
+      "title": "部分 RoPE（最关键差异）",
+      "text": "GLM-4 只对 head_dim 的**前一半**做旋转位置编码：transformers `GlmConfig` 直接 `partial_rotary_factor=0.5`，原始 ChatGLM 代码写 `RotaryEmbedding(rotary_dim // 2)`（=64）。剩下 64 维不编码位置，直接在 `dim=-1` 上拼接。"
+    },
+    {
+      "title": "极致的 GQA 比例",
+      "text": "9B 用 32 个 Q 头对 **2 个 KV 头**（16:1），KV 缓存只有 MHA 的 1/16；32B 用 48/2（24:1）。`repeat_kv` 把 KV 复制到 Q 头数后再做缩放点积注意力。"
+    },
+    {
+      "title": "GLM-4-32B-0414 的 sandwich norm",
+      "text": "2025-04 的 GLM-4-32B-0414（`Glm4ForCausalLM`）把每个子层改成 4 个 RMSNorm：`input_layernorm → attn → post_self_attn_layernorm → +residual`，`post_attention_layernorm → mlp → post_mlp_layernorm → +residual`，用额外 norm 稳定大模型训练；同时 `attention_bias=false`、`rope_theta=10000`、`partial_rotary_factor=0.5`。"
+    }
+  ],
+  "signal_flow": [
+    {
+      "stage": "输入 token id",
+      "shape": "[B, T]",
+      "note": "B=batch, T=序列长"
+    },
+    {
+      "stage": "词嵌入 tok_emb",
+      "shape": "[B, T, 4096]",
+      "note": "不乘 sqrt(d)"
+    },
+    {
+      "stage": "40 × Block(GQA+partial RoPE + SwiGLU)",
+      "shape": "[B, T, 4096]",
+      "note": "残差流形状不变"
+    },
+    {
+      "stage": "最终 RMSNorm",
+      "shape": "[B, T, 4096]",
+      "note": ""
+    },
+    {
+      "stage": "lm_head（不共享）",
+      "shape": "[B, T, 151552]",
+      "note": "输出 logits"
+    }
+  ],
+  "layers": {
+    "n": 40,
+    "groups": [
+      {
+        "from": 0,
+        "to": 39,
+        "attn": "gqa_partial",
+        "ffn": "swiglu",
+        "note": "全层同构（GLM-4-9B）"
+      }
+    ]
+  },
+  "attn_specs": {
+    "gqa_partial": {
+      "label": "GQA + 部分 RoPE",
+      "desc": "Q/K/V 投影（9B 带 bias）后，只对 head_dim 的前 64 维施加 RoPE，后 64 维原样透传；KV 头用 repeat 复制成 Q 头数（32/2=16）后做缩放点积注意力。",
+      "tex": "H=32,\\; H_{kv}=2,\\; G=H/H_{kv}=16,\\; d_h=128,\\; d_{rot}=64\nq=W_q x+b_q,\\quad k=W_k x+b_k,\\quad v=W_v x+b_v\n(q_{rot},k_{rot})=\\mathrm{RoPE}\\!\\left(q_{[:64]},k_{[:64]},m\\right),\\quad q=[q_{rot};q_{[64:]}],\\;k=[k_{rot};k_{[64:]}]\n\\mathrm{Attn}(Q,K,V)=\\mathrm{softmax}\\!\\left(\\frac{QK^{\\top}}{\\sqrt{d_h}}+M\\right)V",
+      "code": "```python\n# HF transformers modeling_glm.py — GlmAttention / apply_rotary_pos_emb\n# https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm/modeling_glm.py\nself.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads  # 32 // 2 = 16\nquery_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)\nkey_states   = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)\nvalue_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)\nquery_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)\n# 部分 RoPE：cos/sin 末维 = int(head_dim * partial_rotary_factor) = 64\nrotary_dim = cos.shape[-1]                       # 64 of 128\nq_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]\nq_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)\nq_embed = torch.cat([q_embed, q_pass], dim=-1)   # 后 64 维原样拼接\n# GQA：repeat_kv(key, self.num_key_value_groups) 然后把 2 个 KV 头铺成 32 个\n```"
+    }
+  },
+  "ffn_specs": {
+    "swiglu": {
+      "label": "SwiGLU",
+      "desc": "门控前馈：down( silu(gate(x)) ⊙ up(x) )。GLM-4 把 gate 和 up 合并成一个 `gate_up_proj` 再 chunk。",
+      "tex": "\\mathrm{SwiGLU}(x)=W_{down}\\big(\\mathrm{SiLU}(W_{gate}x)\\odot W_{up}x\\big)",
+      "code": "```python\n# HF transformers modeling_glm.py — GlmMLP\nself.gate_up_proj = nn.Linear(config.hidden_size, 2 * config.intermediate_size, bias=False)\nself.down_proj    = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)\nup_states = self.gate_up_proj(hidden_states)\ngate, up_states = up_states.chunk(2, dim=-1)\nup_states = up_states * self.activation_fn(gate)   # silu\nreturn self.down_proj(up_states)\n```"
+    }
+  },
+  "extra_specs": [
+    {
+      "label": "RMSNorm",
+      "tex": "\\mathrm{RMSNorm}(x)=\\frac{x}{\\sqrt{\\frac{1}{d}\\sum_{i=1}^{d}x_i^{2}+\\epsilon}}\\odot\\gamma",
+      "code": "```python\n# HF transformers modeling_glm.py — GlmRMSNorm\nhidden_states = hidden_states.to(torch.float32)\nvariance = hidden_states.pow(2).mean(-1, keepdim=True)\nhidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)\nreturn self.weight * hidden_states.to(input_dtype)\n```"
+    },
+    {
+      "label": "部分 RoPE（partial_rotary_factor = 0.5）",
+      "desc": "逆频率只在 rotary_dim=64 维上计算，其余 64 维不参与位置编码。LaTeX 中 `x_{[:64]}` 表示取前 64 维。",
+      "tex": "\\theta_i=\\theta_0^{-2i/d_{rot}},\\quad i=0,\\dots,d_{rot}/2-1,\\quad d_{rot}=0.5\\,d_h=64\n\\mathrm{RoPE}(x,m)=\\big[x_{rot}\\cos(m\\theta)-x_{rot}^{\\perp}\\sin(m\\theta);\\;x_{pass}\\big]"
+    },
+    {
+      "label": "GLM-4-32B-0414：sandwich（4×RMSNorm）",
+      "desc": "32B-0414（`Glm4ForCausalLM`）在 attention 与 MLP 之后各多一次 RMSNorm，形成 pre+post 双重归一化。9B/ChatGLM 块只有 2 个 RMSNorm。",
+      "tex": "h'=\\mathrm{post}_{attn}\\!\\big(\\mathrm{Attn}(\\mathrm{in}_{attn}(h))\\big)+h\ny=\\mathrm{post}_{mlp}\\!\\big(\\mathrm{MLP}(\\mathrm{post}_{attn2}(h'))\\big)+h'",
+      "code": "```python\n# HF transformers modeling_glm4.py — Glm4DecoderLayer（GLM-4-32B-0414）\nhidden_states = self.post_self_attn_layernorm(hidden_states)\nhidden_states = residual + hidden_states\nresidual = hidden_states\nhidden_states = self.post_attention_layernorm(hidden_states)\nhidden_states = self.mlp(hidden_states)\nhidden_states = self.post_mlp_layernorm(hidden_states)\nhidden_states = residual + hidden_states\n```"
+    }
+  ],
+  "code": [
+    {
+      "name": "注意力主干（GQA + 部分 RoPE）",
+      "ref": "https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm/modeling_glm.py",
+      "lang": "python",
+      "code": "query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)\nkey_states   = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)\nvalue_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)\ncos, sin = position_embeddings\nquery_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)\n# 部分 RoPE：cos 末维 64，对前 64 维旋转，后 64 维直接 cat 回\nrotary_dim = cos.shape[-1]\nq_rot, q_pass = query_states[..., :rotary_dim], query_states[..., rotary_dim:]\nq_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)\nq_embed = torch.cat([q_embed, q_pass], dim=-1)\n# GQA\nkey_states   = repeat_kv(key_states, self.num_key_value_groups)\nvalue_states = repeat_kv(value_states, self.num_key_value_groups)\nattn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling\nattn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)\nattn_output  = torch.matmul(attn_weights, value_states)"
+    },
+    {
+      "name": "原始 ChatGLM 建模：rotary_dim = kv_channels // 2",
+      "ref": "https://huggingface.co/zai-org/glm-4-9b-chat/blob/main/modeling_chatglm.py",
+      "lang": "python",
+      "code": "self.kv_channels = config.kv_channels                      # 128\nrotary_dim = (config.hidden_size // config.num_attention_heads\n              if config.kv_channels is None else config.kv_channels)\nself.rotary_pos_emb = RotaryEmbedding(rotary_dim // 2,       # 64 -> partial RoPE\n                                      rope_ratio=config.rope_ratio, ...)"
+    }
+  ],
+  "diff_mini": "GLM-4-9B 与 mini-llm-lab 的骨架几乎同构（decoder-only、RMSNorm、SwiGLU、GQA、pre-norm 残差、RoPE），真正的差异有三处：\n\n- **部分 RoPE**：我们默认对全部 head_dim 旋转，GLM-4 只旋转前 64/128 维（`partial_rotary_factor=0.5`），这是最直接需要改的一行；\n- **GQA 更激进**：它是 32Q/2KV（16:1），我们默认 8W/1KV 或 MHA，KV 头数少得多；\n- **规模与长文**：4096 维 × 40 层、词表 151552，Base 8K；Chat 版靠 YaRN（factor 4, original 32768）扩到 128K，1M 版再扩。\n\n另外 GLM-4-32B-0414 比我们多了 post-attn / post-mlp 两次 RMSNorm（sandwich），可在层里选做。**结论：加一个 `partial_rotary_factor` 开关，我们的 mini 就能基本复现 GLM-4-9B。**",
+  "papers": [
+    {
+      "title": "ChatGLM: A Family of Large Language Models from GLM-130B to GLM-4 All Tools (arXiv:2406.12793)",
+      "url": "https://arxiv.org/abs/2406.12793"
+    },
+    {
+      "title": "THUDM/GLM-4",
+      "url": "https://github.com/zai-org/GLM-4"
+    },
+    {
+      "title": "HF transformers modeling_glm.py",
+      "url": "https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm/modeling_glm.py"
+    }
+  ]
+}

@@ -28,6 +28,9 @@
 - [docs/03-training.md](docs/03-training.md) —— 训练原理、读曲线与续训
 - [docs/04-vlm.md](docs/04-vlm.md) —— 手写 ViT、多模态融合与图文/VQA
 - [docs/05-sft.md](docs/05-sft.md) —— 指令微调（SFT）、对话模板与聊天/评测
+- [docs/06-architecture-compare.md](docs/06-architecture-compare.md) —— 与 Qwen3 / DeepSeek V3→V4.1 的架构对比
+- [docs/07-visualization.md](docs/07-visualization.md) —— 3D 权重可视化（实时训练/推理）
+- [docs/models/README.md](docs/models/README.md) —— 17 个真实模型的逐层架构文档（GLM / Qwen / MiMo / Kimi / DeepSeek）+ [整体对比](docs/models/compare.html)
 
 ## 2. 环境安装
 
@@ -143,7 +146,10 @@ P:\Demo\LLM\
 │  ├─ 03-training.md          # 训练原理
 │  ├─ 04-vlm.md               # 视觉语言模型原理
 │  ├─ 05-sft.md               # 指令微调 / 对话原理
-│  └─ superpowers/            # 设计与实现计划（spec / plan）
+│  ├─ 06-architecture-compare.md  # 与 Qwen3 / DeepSeek V3→V4.1 对比
+│  ├─ 07-visualization.md     # 3D 权重可视化说明
+│  ├─ superpowers/            # 设计与实现计划（spec / plan）
+│  └─ models/                 # 12 个真实模型的逐层架构文档（由架构 JSON 生成）
 ├─ src/
 │  ├─ config.py               # YAML ↔ dataclass 配置，支持命令行覆盖
 │  ├─ hfenv.py                # 统一 HF 代理 / 镜像端点设置
@@ -170,7 +176,16 @@ P:\Demo\LLM\
 │  ├─ train_vlm.py            # VLM 训练入口
 │  ├─ chat.py                 # 命令行聊天（--mode chat|base）
 │  ├─ eval_chat.py            # 自动对话评测 → out/sft/eval.md
+│  ├─ gen_model_docs.py       # 由 viz/architectures/*.json 生成 docs/models/**
 │  └─ webapp.py               # Gradio 网页（对话 + 图文）
+├─ viz/                       # 3D 权重可视化 + 架构浏览器（Python 后端 + Three.js 前端）
+│  ├─ server.py               # FastAPI + WebSocket 服务
+│  ├─ topology.py             # 拓扑 / 权重统计 / 神经元点云 / 激活 hook
+│  ├─ runtime.py              # 小字符级 GPT、实时训练、逐 token 推理
+│  ├─ arch.py                 # 架构 JSON 加载 / 逐层展开
+│  ├─ architectures/*.json    # 12 个真实模型的架构规格（文档与网页同源）
+│  └─ static/                 # 前端页面 + 本地 vendored Three.js / KaTeX
+├─ reference/                 # 仅本地：Qwen3 / DeepSeek 建模代码（.gitignore 忽略）
 ├─ tests/                     # pytest 单元测试
 ├─ data/                      # 所有数据（.gitignore 忽略）
 │  ├─ tokenizer/qwen2.5-0.5b/ # Qwen 分词器（项目内本地）
@@ -198,6 +213,8 @@ P:\Demo\LLM\
 | M10 预训练（ctx 2048） | 大词表中文基座，显存调参 | `configs/gpt_fineweb.yaml`、`out/gpt_pretrain/*` | ✅ |
 | M11 SFT | 对话模板 + assistant-only 掩码 + 多轮合成 | `src/chat_format.py`、`src/sft_data.py`、`scripts/train_sft.py` | ✅ |
 | M12 对话与评测 | 多轮聊天、自动评测、网页 | `scripts/chat.py`、`scripts/eval_chat.py`、`docs/05-sft.md` | ✅ |
+| M13 架构对比 + 3D 可视化 | 克隆 Qwen3/DeepSeek 源码对比；实时看权重变化 | `reference/`、`docs/06-architecture-compare.md`、`viz/`、`docs/07-visualization.md` | ✅ |
+| M14 多模型逐层架构库 | GLM/Qwen/MiMo/Kimi/DeepSeek 17 个版本规格 + 文档 + 架构浏览器 + 整体对比 | `viz/architectures/*.json`、`scripts/gen_model_docs.py`、`scripts/gen_compare_html.py`、`docs/models/**` | ✅ |
 
 ## 9. 运行测试
 
@@ -211,7 +228,9 @@ GQA 与 KV 缓存形状、模型前向与权重共享、小批过拟合（证明
 图文/问答推理；以及 SFT 相关：HF 代理/镜像设置（`src/hfenv.py`）、对话模板与
 assistant-only 掩码/截断（`src/chat_format.py`）、SFT 数据归一化与多轮合成、
 SFTTrainer 只监督助手、fineweb-2 流式读取、`generate` 的 `stop_ids` 停止、
-对话评测通过判定（`src/chat_eval.py`）。
+对话评测通过判定（`src/chat_eval.py`）；以及可视化：拓扑构建、权重统计、
+更新幅度（delta）、神经元点云 PCA、字符分词器、激活 hook 与逐 token 推理（`tests/test_viz.py`）、
+架构 JSON 的良构性与逐层展开（`tests/test_architectures.py`）。
 
 ## 10. 常见问题（FAQ）
 
@@ -334,3 +353,31 @@ LLM 权重从文本阶段的 checkpoint 迁移（"先教说话，再装眼睛"�
 > **能力边界**：这个 SFT 模型总计约 192M 参数，只在一个有界的中文对话样本上微调，
 > 是"**会简单聊天**"的教学模型，**不是可靠的事实助手**。`eval_chat.py` 只检查
 > 非空 / 不重复 / 能停止并记录通过数，**不设阈值、不会失败**；多轮召回是观察项。
+
+## 13. 架构对比与 3D 可视化
+
+```powershell
+# 3D 可视化（实时训练 + 实时推理），打开 http://127.0.0.1:7861
+& ".venv\Scripts\python.exe" viz/server.py
+# 冒烟构建（不启动服务）
+& ".venv\Scripts\python.exe" viz/server.py --check
+```
+
+- 页面有 **分层网络图**（球=层，颜色/大小=权重，连线粗细=权重强度，点击展开层内子模块）、
+  **神经元点云**（点=采样神经元，连线粗细=|权重|，暖色=正/冷色=负）和
+  **架构浏览器**（12 个真实模型的逐层 3D 展示，点层看公式与源码）三个视图。
+- 点「开始训练」实时看权重更新；点「推理」逐 token 看激活与注意力变化。
+- 与 Qwen3 / DeepSeek V3→V4.1 的逐项架构对比见
+  [docs/06-architecture-compare.md](docs/06-architecture-compare.md)；用法与数据协议见
+  [docs/07-visualization.md](docs/07-visualization.md)。
+- **17 个真实模型的逐层架构文档**（GLM-4/4.5/5/5.3/5.3-Flash、Qwen3/3.5/3.8/3-Next、
+  MiMo/MiMo-VL、Kimi K2/K2.5/K3、DeepSeek V3/V3.2/V4.1）见
+  [docs/models/README.md](docs/models/README.md)；**横向对比**见
+  [docs/models/compare.html](docs/models/compare.html)（或在可视化服务打开 `/compare`）。文档与网页都由
+  `viz/architectures/*.json` 生成，新增模型只需加一份 JSON：
+
+```powershell
+& ".venv\Scripts\python.exe" scripts/gen_model_docs.py            # 生成全部文档 + 索引
+& ".venv\Scripts\python.exe" scripts/gen_model_docs.py kimi-k3     # 只生成某个
+& ".venv\Scripts\python.exe" scripts/gen_compare_html.py           # 生成整体对比 HTML
+```

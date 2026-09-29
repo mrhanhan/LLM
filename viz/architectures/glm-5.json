@@ -1,0 +1,303 @@
+{
+  "id": "glm-5",
+  "family": "GLM",
+  "name": "GLM-5",
+  "vendor": "Zhipu AI / Z.ai (THUDM)",
+  "released": "2026-02",
+  "source": "THUDM/GLM-5 `README.md` / `README_zh.md` + 技术报告 arXiv:2602.15763 + HF config `zai-org/GLM-5` / `zai-org/GLM-5-FP8` + HF transformers `modeling_glm_moe_dsa.py`（transformers 5.x）",
+  "summary": "面向长程 Agent 工程的旗舰 MoE：744B 总参 / 40B 激活，78 层；注意力换成 DeepSeek 式 MLA，并叠加 DeepSeek Sparse Attention（DSA）轻量 indexer，每 query 只对 top-2048 个 token 做注意力；前三层 dense，其余 256 路由专家 + 1 共享专家、每 token 激活 8 个，sigmoid 无辅助损失路由 + MTP。",
+  "params": {
+    "total": "744B（GLM-5.1/5.2 同量级）",
+    "active": "40B（每 token 8 路由专家 + 1 共享专家）",
+    "layers": 78,
+    "hidden": 6144,
+    "heads": 64,
+    "kv_heads": "64（MLA 压缩 KV；非 GQA）",
+    "head_dim": "64（qk_rope）/ 256（qk_head_dim）/ 256（v_head_dim）",
+    "ffn": "dense 12288 / MoE 2048×256 + 共享",
+    "vocab": 154880,
+    "ctx": "202752（≈200K；GLM-5.2 起 1M）",
+    "tie": "false"
+  },
+  "config_table": [
+    [
+      "model_type",
+      "glm_moe_dsa（GlmMoeDsaForCausalLM）"
+    ],
+    [
+      "num_hidden_layers",
+      "78"
+    ],
+    [
+      "hidden_size",
+      "6144"
+    ],
+    [
+      "num_attention_heads",
+      "64"
+    ],
+    [
+      "num_key_value_heads",
+      "64（MLA，非 GQA）"
+    ],
+    [
+      "q_lora_rank / kv_lora_rank",
+      "2048 / 512"
+    ],
+    [
+      "qk_nope_head_dim / qk_rope_head_dim",
+      "192 / 64（qk_head_dim=256）"
+    ],
+    [
+      "v_head_dim",
+      "256"
+    ],
+    [
+      "head_dim",
+      "64（= qk_rope_head_dim）"
+    ],
+    [
+      "index_n_heads / index_head_dim",
+      "32 / 128"
+    ],
+    [
+      "index_topk",
+      "2048"
+    ],
+    [
+      "indexer_rope_interleave",
+      "true"
+    ],
+    [
+      "rope_theta / rope_interleave",
+      "1000000 / true"
+    ],
+    [
+      "intermediate_size（dense）",
+      "12288"
+    ],
+    [
+      "moe_intermediate_size",
+      "2048"
+    ],
+    [
+      "n_routed_experts",
+      "256"
+    ],
+    [
+      "n_shared_experts",
+      "1"
+    ],
+    [
+      "num_experts_per_tok",
+      "8"
+    ],
+    [
+      "first_k_dense_replace",
+      "3"
+    ],
+    [
+      "moe_layer_freq",
+      "1（除前 3 层外全 MoE）"
+    ],
+    [
+      "n_group / topk_group",
+      "1 / 1"
+    ],
+    [
+      "scoring_func / topk_method",
+      "sigmoid / noaux_tc"
+    ],
+    [
+      "routed_scaling_factor",
+      "2.5"
+    ],
+    [
+      "num_nextn_predict_layers",
+      "1（MTP）"
+    ],
+    [
+      "rms_norm_eps",
+      "1e-5"
+    ],
+    [
+      "vocab_size",
+      "154880"
+    ],
+    [
+      "max_position_embeddings",
+      "202752"
+    ],
+    [
+      "attention_bias",
+      "false"
+    ],
+    [
+      "tie_word_embeddings",
+      "false"
+    ],
+    [
+      "indexer_types（full/shared）",
+      "?：HF config 未显式给出；代码按 `indexer_types[layer_idx]`，默认每层 full indexer。GLM-5.2 起引入 IndexShare（每 4 个稀疏层共用 1 个 indexer）"
+    ]
+  ],
+  "innovations": [
+    {
+      "title": "从 355B 扩到 744B-A40B",
+      "text": "相比 GLM-4.5 的 355B-A32B，GLM-5 把参数扩到 744B、激活 40B，预训练数据从 23T 增到 28.5T；层数 78、hidden 6144、MoE 路由专家增至 256（每个中间维 2048）。"
+    },
+    {
+      "title": "MLA（Multi-head Latent Attention）",
+      "text": "注意力不是 GQA，而是 DeepSeek 式低秩压缩：query 先降到 `q_lora_rank=2048` 再展开，KV 压成 `kv_lora_rank=512` 的潜向量；qk 头维 192（nope）+ 64（rope）=256，v 头维 256。KV 缓存只存压缩潜量，显著省显存。"
+    },
+    {
+      "title": "DSA（DeepSeek Sparse Attention）",
+      "text": "每层（或共享层）用一个小 indexer 为每个 query 选出最相关的 `index_topk=2048` 个 token，再只在这 2048 个位置上做注意力。indexer 是独立轻量 Q/K 投影（32 头、头维 128、ReLU 打分、per-head 权重），README 称其“大幅降低部署成本同时保留长文能力”。"
+    },
+    {
+      "title": "256 专家 MoE + loss-free 路由",
+      "text": "前三层 dense，其后 256 个路由专家 + 1 个共享专家，每 token 激活 8 个；sigmoid 打分 + `e_score_correction_bias` 无辅助损失选专家，权重归一化后乘 2.5。与 GLM-4.5 同一套路由范式。"
+    },
+    {
+      "title": "MTP 与 slime 异步 RL",
+      "text": "`num_nextn_predict_layers=1` 提供 MTP 投机解码；后训练用官方开源的异步 RL 基础设施 slime（THUDM/slime），提高 RL 吞吐与迭代粒度。"
+    },
+    {
+      "title": "GLM-5.1 / 5.2 / 5.3 演进",
+      "text": "5.1 强化长程 agentic 工程；5.2 提出 IndexShare（每 4 个稀疏注意力层复用一个 indexer，1M 上下文下每 token FLOPs 降 2.9×）并把上下文做到 1M；5.3 主干不变靠后训练提升，另有 5.3-Flash（320B-A18B）首次在 GLM 系列引入**稀疏 + 线性注意力混搭**与 Manifold-Constrained Hyper-Connections (mHC)。"
+    }
+  ],
+  "signal_flow": [
+    {
+      "stage": "输入 token id",
+      "shape": "[B, T]",
+      "note": ""
+    },
+    {
+      "stage": "词嵌入",
+      "shape": "[B, T, 6144]",
+      "note": ""
+    },
+    {
+      "stage": "层 0–2（dense）",
+      "shape": "[B, T, 6144]",
+      "note": "MLA+DSA + SwiGLU"
+    },
+    {
+      "stage": "层 3–77（MoE）",
+      "shape": "[B, T, 6144]",
+      "note": "8/256 路由 + 1 共享"
+    },
+    {
+      "stage": "最终 RMSNorm",
+      "shape": "[B, T, 6144]",
+      "note": ""
+    },
+    {
+      "stage": "lm_head（不共享）",
+      "shape": "[B, T, 154880]",
+      "note": ""
+    },
+    {
+      "stage": "MTP 头（1 层）",
+      "shape": "[B, T, 154880]",
+      "note": "投机解码用"
+    }
+  ],
+  "layers": {
+    "n": 78,
+    "groups": [
+      {
+        "from": 0,
+        "to": 2,
+        "attn": "mla_dsa",
+        "ffn": "swiglu",
+        "note": "前 3 层 dense（first_k_dense_replace=3）"
+      },
+      {
+        "from": 3,
+        "to": 77,
+        "attn": "mla_dsa",
+        "ffn": "moe",
+        "note": "MoE：256 路由 + 1 共享，top-8"
+      }
+    ]
+  },
+  "attn_specs": {
+    "mla_dsa": {
+      "label": "MLA + DSA（稀疏 MLA）",
+      "desc": "先用 MLA 低秩压缩构造 Q/K/V 潜向量，再用 DSA indexer 为每个 query 选 top-2048 token，只在这些位置上做注意力；indexer 用 interleaved RoPE，主注意力用 qk_rope 的 64 维做 RoPE。",
+      "tex": "c_t^{KV}=W^{DKV}h_t\\in\\mathbb{R}^{512},\\quad k_t^{C}=\\mathrm{RMSNorm}\\!\\left(W^{UK}c_t^{KV}\\right)\nq_t=\\mathrm{expand}\\!\\left(\\mathrm{RMSNorm}(W^{DQ}h_t)\\right),\\quad k_t=[k_t^{C};\\,k_t^{R}],\\;k_t^{R}=\\mathrm{RoPE}(W^{KR}h_t)\ns_{t,s}=\\sum_{h}w_{t,h}\\,\\mathrm{ReLU}\\!\\left(q_{t,h}\\!\\cdot\\!k_s\\right)\\cdot d^{-1/2}\n\\mathcal{I}_t=\\mathrm{topk}_{s}\\,s_{t,s}\\;\\;(k=2048),\\qquad \\mathrm{Attn}_t=\\mathrm{softmax}_{s\\in\\mathcal{I}_t}\\!\\left(\\frac{q_tk_s^{\\top}}{\\sqrt{256}}+M\\right)v_s",
+      "code": "```python\n# HF transformers modeling_glm_moe_dsa.py — GlmMoeDsaAttention + GlmMoeDsaIndexer\n# https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py\nq_resid = self.q_a_layernorm(self.q_a_proj(hidden_states))          # q_lora_rank = 2048\nq_states = self.q_b_proj(q_resid).view(query_shape).transpose(1, 2)\nq_pass, q_rot = torch.split(q_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)\ncompressed_kv = self.kv_a_proj_with_mqa(hidden_states)\nkv_pass, k_rot = torch.split(compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)\nk_pass = self.kv_a_layernorm(kv_pass).view(batch_size, 1, seq_length, self.kv_lora_rank)\nq_rot, k_rot = apply_rotary_pos_emb_interleave(q_rot, k_rot, cos, sin)\nkey_states, value_states = self.expand_kv(k_pass, k_rot)\ntopk_indices = self.indexer(hidden_states, q_resid, position_embeddings, ...)  # DSA top-2048\n# 之后把非 topk 位置 mask 掉，仅保留 2048 个 key 参与注意力\n```"
+    }
+  },
+  "ffn_specs": {
+    "swiglu": {
+      "label": "SwiGLU（dense / 共享专家）",
+      "desc": "前 3 层 dense FFN 与 MoE 的共享专家均为标准 SwiGLU（中间维 12288 / 共享 2048）。",
+      "tex": "\\mathrm{SwiGLU}(x)=W_{down}\\big(\\mathrm{SiLU}(W_{gate}x)\\odot W_{up}x\\big)",
+      "code": "```python\n# HF transformers modeling_glm_moe_dsa.py — GlmMoeDsaMLP\nreturn self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))\n```"
+    },
+    "moe": {
+      "label": "GLM-5 MoE（256 路由 + 1 共享）",
+      "desc": "sigmoid 打分 + `e_score_correction_bias` 选 top-8，权重归一化后乘 2.5；8 个专家的 SwiGLU 输出加权求和，再叠加恒开的共享专家。",
+      "tex": "s=\\sigma(W_g x),\\quad \\tilde{s}=s+b_{corr},\\quad \\mathcal{T}=\\mathrm{top8}(\\tilde{s})\ny=\\sum_{i\\in\\mathcal{T}}\\frac{s_i}{\\sum_{j\\in\\mathcal{T}}s_j}\\cdot 2.5\\,\\cdot\\,\\mathrm{Expert}_i(x)+\\mathrm{Shared}(x)",
+      "code": "```python\n# HF transformers modeling_glm_moe_dsa.py — GlmMoeDsaTopkRouter + GlmMoeDsaMoE\nscores = router_logits.sigmoid()\nscores_for_choice = scores + self.e_score_correction_bias\ntopk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]\ntopk_weights = scores.gather(1, topk_indices) / (scores.gather(1, topk_indices).sum(-1, keepdim=True) + 1e-20)\n# MoE 前向\n_, topk_weights, topk_indices = self.gate(hidden_states)\nhidden_states = self.experts(hidden_states, topk_indices, topk_weights).view(*orig_shape)\nhidden_states = hidden_states + self.shared_experts(residuals)\n```"
+    }
+  },
+  "extra_specs": [
+    {
+      "label": "RMSNorm",
+      "tex": "\\mathrm{RMSNorm}(x)=\\frac{x}{\\sqrt{\\frac{1}{d}\\sum_{i=1}^{d}x_i^{2}+\\epsilon}}\\odot\\gamma"
+    },
+    {
+      "label": "MLA 低秩 KV 压缩",
+      "desc": "KV 只缓存 512 维潜向量 `c^{KV}` + 64 维带位置的 `k^R`，而非完整 K/V；这是 GLM-5 相对 GLM-4.5 GQA 的最大缓存/算力优化。",
+      "tex": "\\#\\,\\text{cached per token}=512+64=576\\ \\ (\\text{vs. GQA 的 } H_{kv}\\cdot 2d_h)\nv_t=W^{UV}c_t^{KV},\\qquad k_t^{C}=W^{UK}c_t^{KV}"
+    },
+    {
+      "label": "DSA indexer 打分公式",
+      "desc": "indexer 有独立的 `wq_b`（q_lora_rank→32×128）与 `wk`（hidden→128），`weights_proj` 给出每头权重；对全序列打分后取 top-2048。",
+      "tex": "q^{\\,idx}=\\mathrm{RoPE}\\!\\left(W_{q}^{idx}\\,q_{resid}\\right),\\quad k^{\\,idx}=\\mathrm{RMSNorm}\\!\\left(W_{k}^{idx}h\\right)\ns_{t,s}=\\sum_{h=1}^{32}w_{t,h}\\cdot\\mathrm{ReLU}\\!\\left(q^{\\,idx}_{t,h}\\cdot k^{\\,idx}_{s}\\right)\\cdot 128^{-1/2}"
+    },
+    {
+      "label": "RoPE（interleaved, θ=1e6）",
+      "desc": "GLM-5 使用 interleaved RoPE（相邻维成对旋转），只作用于 qk_rope 的 64 维；indexer 同样用 interleaved RoPE。",
+      "tex": "\\theta_i=\\theta_0^{-2i/64},\\quad \\theta_0=10^{6}\n\\mathrm{RoPE}_{int}(x_{2i},x_{2i+1})=\\begin{bmatrix}x_{2i}\\cos m\\theta_i-x_{2i+1}\\sin m\\theta_i\\\\ x_{2i}\\sin m\\theta_i+x_{2i+1}\\cos m\\theta_i\\end{bmatrix}"
+    },
+    {
+      "label": "MTP（多 token 预测）",
+      "desc": "`num_nextn_predict_layers=1`：主干后接 1 个 MTP 层（含 `eh_proj/enorm/hnorm`）用于投机解码；README 部署示例用 EAGLE/MTP。",
+      "tex": "p(x_{t+1},x_{t+2}\\mid x_{\\le t})\\;\\approx\\;p_{head}\\!\\left(\\mathrm{MTP}(h_t)\\right)"
+    }
+  ],
+  "code": [
+    {
+      "name": "MLA 主注意力（低秩 Q/KV + interleaved RoPE）",
+      "ref": "https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py",
+      "lang": "python",
+      "code": "q_resid = self.q_a_layernorm(self.q_a_proj(hidden_states))\nq_states = self.q_b_proj(q_resid).view(query_shape).transpose(1, 2)\nq_pass, q_rot = torch.split(q_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)\ncompressed_kv = self.kv_a_proj_with_mqa(hidden_states)\nkv_pass, k_rot = torch.split(compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)\nk_pass = self.kv_a_layernorm(kv_pass).view(batch_size, 1, seq_length, self.kv_lora_rank)\nq_rot, k_rot = apply_rotary_pos_emb_interleave(q_rot, k_rot, cos, sin)\nkey_states, value_states = self.expand_kv(k_pass, k_rot)"
+    },
+    {
+      "name": "DSA indexer：为每个 query 选 top-2048 token",
+      "ref": "https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py",
+      "lang": "python",
+      "code": "q = self.wq_b(q_resid).view(batch_size, seq_len, self.n_heads, self.head_dim)\nq_rot, q_pass = torch.split(q, [self.qk_rope_head_dim, self.head_dim - self.qk_rope_head_dim], dim=-1)\nk = self.k_norm(self.wk(hidden_states)).unsqueeze(2)\nk_rot, k_pass = torch.split(k, [self.qk_rope_head_dim, self.head_dim - self.qk_rope_head_dim], dim=-1)\nq_rot, k_rot = apply_rotary_pos_emb_interleave(q_rot, k_rot, cos, sin)\nscores = torch.matmul(q.float(), k.transpose(-1, -2).float()) * self.softmax_scale\nscores = F.relu(scores)\nweights = self.weights_proj(hidden_states).float() * (self.n_heads ** -0.5)\nindex_scores = torch.matmul(weights.unsqueeze(-2), scores).squeeze(-2)\ntopk = min(self.index_topk, index_scores.shape[-1])            # 2048\nreturn index_scores.topk(topk, dim=-1).indices.to(torch.int32)"
+    }
+  ],
+  "diff_mini": "GLM-5 与我们手写 mini-llm-lab 的差距是三代同堂式的：\n\n- **注意力**：mini 是 MHA/GQA + 全量 RoPE；GLM-5 是 **MLA**（低秩压缩 KV，只存 512+64 维/ token）再加 **DSA**（每 query 只看 top-2048 token），复杂度从 O(T²) 降到近似 O(T·2048)；\n- **FFN**：mini 单 SwiGLU；GLM-5 前三层 SwiGLU，其余 256 路由专家 + 1 共享、每 token 8 个；\n- **规模**：6144 维 × 78 层、744B 总参，是我们 ~192M 的数千倍；\n- **路由/位置**：sigmoid 无辅助损失 routing、interleaved RoPE θ=1e6、1 层 MTP。\n\n要在 mini 里体会，可先加部分 RoPE + MoE（对齐 GLM-4.5），再单独实现 MLA+DSA（对齐 GLM-5）。",
+  "papers": [
+    {
+      "title": "GLM-5: from Vibe Coding to Agentic Engineering (arXiv:2602.15763)",
+      "url": "https://arxiv.org/abs/2602.15763"
+    },
+    {
+      "title": "THUDM/GLM-5",
+      "url": "https://github.com/zai-org/GLM-5"
+    },
+    {
+      "title": "HF transformers modeling_glm_moe_dsa.py",
+      "url": "https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm_moe_dsa/modeling_glm_moe_dsa.py"
+    }
+  ]
+}
