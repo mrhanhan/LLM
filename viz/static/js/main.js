@@ -142,8 +142,9 @@ function drawLoss() {
   ctx.strokeStyle = '#4f8cff';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
+  const denom = Math.max(lossHistory.length - 1, 1);
   for (let k = 0; k < lossHistory.length; k++) {
-    const x = (k / (LOSS_MAX - 1)) * w;
+    const x = (k / denom) * w;
     const t = span < 1e-9 ? 0.5 : (lossHistory[k] - mn) / span;
     const y = h - 4 - t * (h - 10);
     if (k === 0) ctx.moveTo(x, y);
@@ -193,18 +194,22 @@ function setTraining(on) {
 }
 
 async function trainStart() {
+  if (training) return;
+  const prev = training;
   setTraining(true);
   try {
-    await fetch('/api/train/start', { method: 'POST' });
+    const res = await fetch('/api/train/start', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (e) {
     console.error('开始训练失败', e);
-    setTraining(false);
+    setTraining(prev);
   }
 }
 
 async function trainStop() {
   try {
-    await fetch('/api/train/stop', { method: 'POST' });
+    const res = await fetch('/api/train/stop', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (e) {
     console.error('停止训练失败', e);
   }
@@ -242,13 +247,14 @@ function setBadges(graph) {
   if (badgeDevice) badgeDevice.textContent = (graph && graph.device) || '–';
 }
 
-// 切换真实 checkpoint / 实时小模型：重建 Shelf + Links + Flow
+// 切换真实 checkpoint / 实时小模型：重建 Shelf + Links + Flow。
+// 成功返回 true；失败返回 false 且保持现有场景/数据源不变（仅记录并提示）。
 async function reload(src) {
   const next = src === 'ckpt' ? 'ckpt' : 'live';
-  cloudOff();
-  window.__panel?.close?.();
   try {
     const graph = await getModel(next);
+    cloudOff();
+    window.__panel?.close?.();
     if (links) links.dispose();
     if (flow) flow.dispose();
     modelGroup.clear();
@@ -265,8 +271,11 @@ async function reload(src) {
     setBadges(graph);
     resetLoss();
     setTrainPanel(next === 'live');
+    return true;
   } catch (e) {
-    console.error('加载模型图失败', e);
+    console.error(`加载模型图失败（${next}）`, e);
+    if (badgeModel) badgeModel.textContent = `加载失败 · ${next}`;
+    return false;
   }
 }
 
@@ -429,14 +438,18 @@ addEventListener('resize', resize); resize();
 // 顶栏模式切换：live/ckpt 重建数据源；arch 留给 Task 16
 const modeButtons = Array.from(document.querySelectorAll('.viewswitch button'));
 for (const btn of modeButtons) {
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     const mode = btn.dataset.mode;
     if (mode === 'arch') {
       console.info('架构浏览器（arch）由 Task 16 实现');
       return;
     }
-    for (const b of modeButtons) b.classList.toggle('active', b === btn);
-    if (mode !== source) reload(mode);
+    if (mode === source) return;
+    const ok = await reload(mode);
+    for (const b of modeButtons) {
+      b.classList.toggle('active', b.dataset.mode === (ok ? mode : source));
+    }
+    if (!ok) console.error(`切换到 ${mode} 失败，保持 ${source}`);
   });
 }
 
