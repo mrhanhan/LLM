@@ -108,6 +108,7 @@ class State:
         self.mode = "weights" if args.ckpt else "live"
         self._live = None   # (model, tok, graph)
         self._ckpt = None   # (model, tok, graph)
+        self._stores: dict[str, MatrixStore] = {}
         self.trainer: LiveTrainer | None = None
 
     def ensure_live(self):
@@ -136,7 +137,9 @@ class State:
         return self.ensure_live() if which == "live" else self.ensure_ckpt()
 
     def store(self, which: str) -> MatrixStore:
-        return MatrixStore(self.source(which)[0])
+        if which not in self._stores:
+            self._stores[which] = MatrixStore(self.source(which)[0])
+        return self._stores[which]
 
     def graph(self, which: str) -> dict:
         model, _, graph = self.source(which)
@@ -188,7 +191,11 @@ async def index():
 
 @app.get("/api/model")
 async def api_model(source: str = "live"):
-    return JSONResponse(state.graph(source))
+    if source == "ckpt":
+        graph = await asyncio.to_thread(state.graph, source)
+    else:
+        graph = state.graph(source)
+    return JSONResponse(graph)
 
 
 @app.get("/api/matrix/{name}/grid")
@@ -241,6 +248,15 @@ async def api_arch(model_id: str):
     return JSONResponse(arch_mod.public(spec))
 
 
+@app.get("/compare")
+async def compare_page():
+    f = ROOT / "docs" / "models" / "compare.html"
+    if not f.exists():
+        return JSONResponse({"error": "compare.html 尚未生成，请运行 scripts/gen_compare_html.py"},
+                            status_code=404)
+    return FileResponse(f)
+
+
 @app.post("/api/train/start")
 async def api_train_start():
     state.ensure_live()
@@ -274,7 +290,7 @@ async def ws(websocket: WebSocket):
     q = state.hub.register()
     try:
         await websocket.send_json(
-            {"type": "init", **state.graph("ckpt" if state.mode == "weights" else "live")})
+            {"type": "init", "source": "ckpt" if state.mode == "weights" else "live"})
         while True:
             await websocket.send_json(await q.get())
     except WebSocketDisconnect:

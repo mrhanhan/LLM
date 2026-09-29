@@ -254,6 +254,15 @@ window.__flow = null;
 
 const badgeModel = document.getElementById('badge-model');
 const badgeDevice = document.getElementById('badge-device');
+let serverSource = null;
+let badgeSource = document.getElementById('badge-source');
+if (!badgeSource && badgeDevice && badgeDevice.parentElement) {
+  badgeSource = document.createElement('span');
+  badgeSource.className = 'badge';
+  badgeSource.id = 'badge-source';
+  badgeSource.textContent = '–';
+  badgeDevice.parentElement.insertBefore(badgeSource, badgeDevice);
+}
 
 function fmtCount(n) {
   const v = Number(n);
@@ -282,6 +291,7 @@ async function reload(src) {
     window.__panel?.close?.();
     if (links) links.dispose();
     if (flow) flow.dispose();
+    shelf?.dispose();
     modelGroup.clear();
     flowGroup.clear();
     source = next;
@@ -363,6 +373,14 @@ document.getElementById('btn-step')?.addEventListener('click', () => runInfer(1)
 
 connectWS((m) => {
   if (!m) return;
+  if (m.type === 'init') {
+    serverSource = m.source === 'ckpt' ? 'ckpt' : 'live';
+    if (badgeSource) {
+      badgeSource.textContent = serverSource === 'ckpt' ? 'checkpoint' : '实时训练';
+      badgeSource.title = `服务端数据源：${serverSource}`;
+    }
+    return;
+  }
   if (m.type === 'tick') {
     shelf?.updateValues(m.values);
     links?.update(m.values);
@@ -457,7 +475,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   if (!hits.length) return;
   const ud = hits[0].object.userData || {};
   if (ud.kind === 'matrix') {
-    window.__panel?.show?.(ud.spec, source);
+    window.__panel?.show?.(ud.spec, source, shelf.graph.global_absmax);
     mountCloudControl(ud.spec);
   } else if (ud.role === 'slab') {
     shelf.expand(ud.layerId).then(() => links?.rebuild(shelf)).catch(console.error);

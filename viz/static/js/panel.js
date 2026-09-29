@@ -121,7 +121,10 @@ export class Panel {
     this.vminEl = document.createElement('span');
     this.vmaxEl = document.createElement('span');
     legendLabels.append(this.vminEl, this.vmaxEl);
-    legend.append(this.legendCv, legendLabels);
+    this.scaleEl = document.createElement('div');
+    this.scaleEl.style.cssText = 'color:#6f86b0;font-size:11px;margin-top:2px;';
+    this.scaleEl.textContent = '';
+    legend.append(this.legendCv, legendLabels, this.scaleEl);
 
     const controls = document.createElement('div');
     controls.style.cssText = 'display:flex;gap:6px;align-items:center;';
@@ -218,9 +221,10 @@ export class Panel {
     this._draw(tiles);
   }
 
-  async show(spec, source = 'live') {
+  async show(spec, source = 'live', globalAbsmax = null) {
     this.spec = spec;
     this.source = source || 'live';
+    this.globalAbsmax = globalAbsmax || null;
     this.root.classList.remove('hidden');
     this._ensure();
     this.tiles = 192;
@@ -248,8 +252,9 @@ export class Panel {
         getGrid(name, this.source, tiles),
       ]);
       if (seq !== this.seq) return;
-      this._renderHeat(grid.values, stats.absmax || 1);
-      this._drawLegend(stats);
+      const absmax = this.globalAbsmax || stats.absmax || 1;
+      this._renderHeat(grid.values, absmax);
+      this._drawLegend(stats, absmax);
     } catch (e) {
       if (seq !== this.seq) return;
       console.error('加载矩阵失败', name, e);
@@ -297,7 +302,7 @@ export class Panel {
     }
   }
 
-  _drawLegend(stats) {
+  _drawLegend(stats, absmax = null) {
     const ctx = this.legendCv.getContext('2d');
     const g = ctx.createLinearGradient(0, 0, this.legendCv.width, 0);
     for (let i = 0; i <= 20; i++) {
@@ -305,8 +310,12 @@ export class Panel {
     }
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, this.legendCv.width, this.legendCv.height);
-    this.vminEl.textContent = `min ${fmt(stats.vmin)}`;
-    this.vmaxEl.textContent = `max ${fmt(stats.vmax)}`;
+    const scale = absmax || stats.absmax || 1;
+    this.vminEl.textContent = `-${fmt(scale)}`;
+    this.vmaxEl.textContent = `+${fmt(scale)}`;
+    if (this.scaleEl) {
+      this.scaleEl.textContent = `全局归一化色标 ±${fmt(scale)}（与 3D 板材一致）`;
+    }
   }
 
   // 架构浏览器：点击层板/模块板在抽屉里显示 KaTeX 公式与源码。

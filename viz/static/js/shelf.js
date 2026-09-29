@@ -187,6 +187,29 @@ export class Shelf {
     return this.meshes.filter((m) => m.userData && m.userData.role === 'slab');
   }
 
+  // 释放 GPU 资源：矩阵/薄板几何、材质（含 map 纹理）与标签精灵纹理，然后清空分组。
+  dispose() {
+    const disposeObj = (obj) => {
+      if (!obj) return;
+      if (obj.geometry) obj.geometry.dispose();
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (mat.map) mat.map.dispose();
+        mat.dispose();
+      }
+    };
+    for (const mesh of this.meshes) disposeObj(mesh);
+    for (const tray of this.trays.values()) {
+      disposeObj(tray.userData.label);
+    }
+    this.group.clear();
+    this.meshes.length = 0;
+    this.trays.clear();
+    this.byLayer.clear();
+    this.expanded = null;
+  }
+
   // 由 WS tick 的 values（按矩阵名）驱动矩阵板配色。
   // 认 norm（预处理归一化值），delta 存在时额外驱动自发光。
   updateValues(values) {

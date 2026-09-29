@@ -84,6 +84,7 @@ export async function showArch(group, panel, modelId) {
   panel?.close?.();
 
   const boards = [];
+  boards.push({ kind: 'module', label: '词嵌入 tok_emb', color: MODULE_COLOR, mod: null });
   for (const row of currentRows) {
     boards.push({
       kind: 'layer',
@@ -94,7 +95,6 @@ export async function showArch(group, panel, modelId) {
       ffn: row.ffn,
     });
   }
-  boards.push({ kind: 'module', label: '词嵌入 tok_emb', color: MODULE_COLOR, mod: null });
   for (const e of spec.extra_specs || []) {
     boards.push({ kind: 'module', label: e.label || '模块', color: MODULE_COLOR, mod: e });
   }
