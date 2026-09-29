@@ -5,6 +5,7 @@ from src.config import ModelConfig
 from src.model import GPT
 from viz.graph import build_graph, CUBE_THRESHOLD
 from viz.runtime import CharTokenizer, CORPUS
+from viz.stats import ActivationRecorder, WeightTracker, snapshot_matrices, summarize
 
 
 def tiny_model():
@@ -33,3 +34,17 @@ def test_char_tokenizer_roundtrip():
     tok = CharTokenizer(CORPUS)
     ids = tok.encode("人工智能")
     assert tok.decode(ids) == "人工智能"[0:len(ids)] or len(ids) == 4
+
+
+def test_summarize_and_snapshot_by_matrix():
+    model = tiny_model()
+    g = build_graph(model)
+    s = summarize([torch.randn(8, 4)])
+    assert s["n"] == 32 and s["norm"] > 0
+    tracker = WeightTracker(); tracker.capture(model)
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(0.01)
+    snap = snapshot_matrices(model, g["matrices"], tracker=tracker)
+    assert snap["tok_emb.weight"]["delta"] > 0
+    assert snap["tok_emb.weight"]["norm"] > 0
