@@ -3,8 +3,8 @@
 从零手写一个**中文 GPT** 的教学项目：不依赖任何 HuggingFace 高层模型封装，
 只用 PyTorch 原生算子实现「分词 → 数据 → 模型 → 训练 → 生成/聊天」的完整闭环。
 
-> 主线叙事：**先教它说话**（文本 LLM）→ **再给它装眼睛**（手写 ViT）→ **让它开口描述世界**（多模态）。
-> 当前仓库已完成第一阶段（文本闭环），第二阶段的实现计划见
+> 主线叙事：**先教说话**（预训练文本 LLM）→ **装眼睛**（手写 ViT）→ **学会对话**（SFT 指令微调 + 聊天）。
+> 文本闭环（分词/预训练/生成）与多模态（VLM）均已跑通；第二阶段的实现计划见
 > `docs/superpowers/plans/2026-09-28-mini-llm-vlm.md`。
 
 ## 1. 项目简介
@@ -26,6 +26,8 @@
 - [docs/01-tokenizer.md](docs/01-tokenizer.md) —— 分词器原理与对比实验
 - [docs/02-transformer.md](docs/02-transformer.md) —— 模型结构与参数量逐项计算
 - [docs/03-training.md](docs/03-training.md) —— 训练原理、读曲线与续训
+- [docs/04-vlm.md](docs/04-vlm.md) —— 手写 ViT、多模态融合与图文/VQA
+- [docs/05-sft.md](docs/05-sft.md) —— 指令微调（SFT）、对话模板与聊天/评测
 
 ## 2. 环境安装
 
@@ -42,7 +44,9 @@
 ## 3. 数据准备
 
 所有数据、分词器与产物都落在 `data/` 下，**不依赖 HF 缓存目录**。
-下载端点强制走国内镜像 `HF_ENDPOINT=https://hf-mirror.com`（在 `src/data.py` 中设置）。
+HF 访问统一由 `src/hfenv.py` 设置：本机默认走代理 `http://127.0.0.1:7890`
+直连官方 `huggingface.co`，无代理时可用国内镜像 `--endpoint https://hf-mirror.com`
+（旧的 TinyStories 准备脚本默认镜像端点）。
 
 **第一步：下载 Qwen 分词器 + 中文 TinyStories**
 
@@ -102,18 +106,25 @@
 
 ## 6. 聊天 / 续写
 
-```powershell
-& ".venv\Scripts\python.exe" scripts/chat.py
-```
-
-加载 `out/gpt/latest.pt` 后进入交互式续写，输入 `/quit` 或 `/exit` 退出。可调参数：
+`scripts/chat.py` 有两种模式：
 
 ```powershell
-& ".venv\Scripts\python.exe" scripts/chat.py --temperature 0.8 --top_p 0.9 --max_new_tokens 128
+# 对话模式（默认）：加载 out/sft/latest.pt，多轮问答，/reset 清空，/quit 退出
+& ".venv\Scripts\python.exe" scripts/chat.py --mode chat
+
+# 基座续写模式：加载 out/gpt/latest.pt，输入 /quit 或 /exit 退出
+& ".venv\Scripts\python.exe" scripts/chat.py --mode base
 ```
 
-> 基座模型是「续写」而非「问答」，更擅长接龙续写故事，而不是回答问题。
-> 若要图文推理，请用后续 VLM 计划里的 `vlm_generate.py` / `webapp.py`。
+可调参数（两模式通用）：
+
+```powershell
+& ".venv\Scripts\python.exe" scripts/chat.py --mode chat --temperature 0.7 --top_p 0.9 --max_new_tokens 256
+```
+
+> **基座模型是「续写」而非「问答」**，更擅长接龙续写故事，而不是回答问题——这一
+> 提醒仍然适用于 `--mode base`。要问答请用 `--mode chat`（需先完成第 12 节的 SFT）。
+> 若要图文推理，请用 `vlm_generate.py` / `webapp.py`。
 
 ## 7. 目录结构
 
@@ -123,32 +134,51 @@ P:\Demo\LLM\
 ├─ requirements.txt
 ├─ configs/
 │  ├─ gpt_tinystories.yaml    # 默认：Qwen 分词器 + TinyStories 中文
-│  └─ gpt_bpe.yaml            # 对比：自定义 16k BPE 分词器
+│  ├─ gpt_bpe.yaml            # 对比：自定义 16k BPE 分词器
+│  ├─ gpt_fineweb.yaml        # 预训练：fineweb-2 中文，ctx 2048
+│  └─ sft_zh.yaml             # SFT：对话数据 + 对话模板
 ├─ docs/
 │  ├─ 01-tokenizer.md         # 分词原理
 │  ├─ 02-transformer.md       # 模型结构
 │  ├─ 03-training.md          # 训练原理
+│  ├─ 04-vlm.md               # 视觉语言模型原理
+│  ├─ 05-sft.md               # 指令微调 / 对话原理
 │  └─ superpowers/            # 设计与实现计划（spec / plan）
 ├─ src/
 │  ├─ config.py               # YAML ↔ dataclass 配置，支持命令行覆盖
+│  ├─ hfenv.py                # 统一 HF 代理 / 镜像端点设置
 │  ├─ tokenizer.py            # 手写 BPE + 字符级 + Qwen 适配
 │  ├─ data.py                 # 下载、解析、预处理、随机批采样
 │  ├─ attention.py            # RoPE + 因果多头注意力 + GQA + KV 缓存
 │  ├─ model.py                # RMSNorm / SwiGLU / Block / GPT
-│  ├─ trainer.py              # 训练循环（AMP / 累积 / 裁剪 / 续训 / 曲线）
-│  ├─ generate.py             # KV-cache 自回归采样
+│  ├─ trainer.py              # Trainer / VLMTrainer / SFTTrainer（AMP / 累积 / 续训 / 曲线）
+│  ├─ generate.py             # KV-cache 自回归采样（stop_ids / add_bos）
+│  ├─ chat_format.py          # 对话模板、assistant-only 掩码、停止符
+│  ├─ sft_data.py             # SFT 归一化 / 多轮合成 / npz Dataset
+│  ├─ chat_eval.py            # 评测题库与通过判定（纯逻辑）
+│  ├─ vision.py / vlm.py      # 手写 ViT + 多模态融合
+│  ├─ vlm_generate.py         # 图片描述 / VQA 推理
 │  └─ utils.py                # 种子、LR 调度、日志、loss 曲线
 ├─ scripts/
 │  ├─ prepare_data_part1.py   # 下载分词器与语料
 │  ├─ prepare_data_part2.py   # 编码成 train.bin / val.bin（--tokenizer_kind qwen|bpe|char）
+│  ├─ prepare_pretrain_data.py # fineweb-2 中文 → fineweb_cmn.*.bin
+│  ├─ prepare_sft_data.py     # alpaca-zh + firefly → sft/*.npz
 │  ├─ train_tokenizer.py      # 训练并保存手写 BPE 词表
-│  ├─ train_gpt.py            # 训练入口
-│  └─ chat.py                 # 命令行聊天
+│  ├─ train_gpt.py            # 预训练入口
+│  ├─ train_sft.py            # SFT 训练入口
+│  ├─ train_vlm.py            # VLM 训练入口
+│  ├─ chat.py                 # 命令行聊天（--mode chat|base）
+│  ├─ eval_chat.py            # 自动对话评测 → out/sft/eval.md
+│  └─ webapp.py               # Gradio 网页（对话 + 图文）
 ├─ tests/                     # pytest 单元测试
 ├─ data/                      # 所有数据（.gitignore 忽略）
 │  ├─ tokenizer/qwen2.5-0.5b/ # Qwen 分词器（项目内本地）
 │  ├─ raw/text/tinystories_zh/# 原始 jsonl
-│  └─ processed/text/         # train.bin / val.bin
+│  ├─ raw/text/fineweb_cmn/   # fineweb-2 中文缓存
+│  ├─ raw/sft/                # alpaca-zh / firefly 原始文件
+│  ├─ processed/text/         # *.bin 预训练二进制
+│  └─ processed/sft/          # train.npz / val.npz
 └─ out/                       # checkpoint / loss.png / metrics.jsonl（忽略）
 ```
 
@@ -164,6 +194,10 @@ P:\Demo\LLM\
 | M6 视觉 | 手写 ViT + 投影层 | `src/vision.py`、`src/vlm.py` | ✅ |
 | M7 多模态训练 | 合成图文 → 真实图文 → 简单 VQA | `scripts/train_vlm.py` | ✅ |
 | M8 交互与文档 | Gradio 网页 + 原理文档 | `scripts/webapp.py`、`docs/04-vlm.md` | ✅ |
+| M9 预训练数据 | fineweb-2 `cmn_Hani` 流式采样 + HF 代理 | `scripts/prepare_pretrain_data.py`、`src/hfenv.py` | ✅ |
+| M10 预训练（ctx 2048） | 大词表中文基座，显存调参 | `configs/gpt_fineweb.yaml`、`out/gpt_pretrain/*` | ✅ |
+| M11 SFT | 对话模板 + assistant-only 掩码 + 多轮合成 | `src/chat_format.py`、`src/sft_data.py`、`scripts/train_sft.py` | ✅ |
+| M12 对话与评测 | 多轮聊天、自动评测、网页 | `scripts/chat.py`、`scripts/eval_chat.py`、`docs/05-sft.md` | ✅ |
 
 ## 9. 运行测试
 
@@ -174,7 +208,10 @@ P:\Demo\LLM\
 测试覆盖：配置加载/覆盖、分词往返（`decode(encode(x)) == x`）、因果 mask 正确性、
 GQA 与 KV 缓存形状、模型前向与权重共享、小批过拟合（证明模型能学）、训练器续训、
 编译失败回退 eager、合成图文数据与 collate、ViT 形状与双向注意力、VLM 特征替换与权重迁移、
-图文/问答推理。
+图文/问答推理；以及 SFT 相关：HF 代理/镜像设置（`src/hfenv.py`）、对话模板与
+assistant-only 掩码/截断（`src/chat_format.py`）、SFT 数据归一化与多轮合成、
+SFTTrainer 只监督助手、fineweb-2 流式读取、`generate` 的 `stop_ids` 停止、
+对话评测通过判定（`src/chat_eval.py`）。
 
 ## 10. 常见问题（FAQ）
 
@@ -197,12 +234,13 @@ Qwen 词表有 151666 个 token，超过 `uint16` 上限 65535，必须用 4 字
 `uint16`，但为了统一，本项目一律 `uint32`。
 
 **Q4：控制台打印中文报 `UnicodeEncodeError`？**
-`scripts/train_gpt.py`、`scripts/train_tokenizer.py`、`scripts/prepare_data_part1.py`
-与 `scripts/prepare_data_part2.py` 都已强制 `sys.stdout.reconfigure(encoding="utf-8")`。
-`scripts/chat.py` 未加此保护，若报编码错误，先执行 `$env:PYTHONUTF8=1`（或设置同名系统环境变量）再运行。
+`scripts/` 下的训练/准备/聊天脚本都已强制
+`sys.stdout.reconfigure(encoding="utf-8")`。若仍报错，先执行 `$env:PYTHONUTF8=1`
+（或设置同名系统环境变量）再运行。
 
 **Q5：下载超时 / 连接失败？**
-项目统一走 `HF_ENDPOINT=https://hf-mirror.com`。如果仍失败，检查网络或手动确认该镜像可用。
+默认走本机代理 `http://127.0.0.1:7890` 直连官方 HF；无代理时改用镜像
+`--endpoint https://hf-mirror.com`。两条路径都由 `src/hfenv.py` 统一设置。
 
 **Q6：`data/` 和 `out/` 会进 git 吗？**
 不会，已在 `.gitignore` 忽略。分词器、语料、checkpoint、曲线都不入库。
@@ -253,3 +291,46 @@ LLM 权重从文本阶段的 checkpoint 迁移（"先教说话，再装眼睛"�
 > VLM 默认配置 `configs/vlm_children.yaml`：`img_size=128`、`patch_size=16` → 每个样本
 > 64 个 `<image>` token；`d_vision=384, depth=6`；`data_kind: synthetic`。
 > 生成效果差时，优先检查标签是否相对输入**右移一位**（见 docs/04-vlm.md 第 5 节）。
+
+## 12. 对话（SFT）使用
+
+原理见 [docs/05-sft.md](docs/05-sft.md)：预训练基座只会"续写"，SFT 用
+"用户问 / 助手答"的对话数据教它**只对助手的话算损失**（其余 token 标签为 `-100`），
+复用 Qwen 的 `<|im_start|>/<|im_end|>` 做对话分隔（不扩词表）。
+
+**环境（HF 访问）**：默认直连官方并走本机代理 `http://127.0.0.1:7890`
+（`configs/*.yaml` 的 `data.proxy`，命令行 `--proxy`）；无代理可用镜像
+`--endpoint https://hf-mirror.com`。
+
+```powershell
+# 1) 预训练数据：fineweb-2 中文（默认约 1GB 文本）
+& ".venv\Scripts\python.exe" scripts/prepare_pretrain_data.py
+
+# 2) 预训练基座（ctx 2048，约 192M 参数）
+#    本机 16GB 显存务必用配置默认的 batch_size=1, grad_accum=64（见 docs/05-sft.md 第 4 节）
+& ".venv\Scripts\python.exe" scripts/train_gpt.py --config configs/gpt_fineweb.yaml
+#    续训：
+& ".venv\Scripts\python.exe" scripts/train_gpt.py --config configs/gpt_fineweb.yaml `
+  --resume out/gpt_pretrain/latest.pt
+
+# 3) SFT 数据：alpaca-zh + firefly（默认 40000 条），合成多轮对话
+& ".venv\Scripts\python.exe" scripts/prepare_sft_data.py
+
+# 4) SFT 训练（默认从 out/gpt_pretrain/latest.pt 初始化；--init 可换权重）
+& ".venv\Scripts\python.exe" scripts/train_sft.py
+#    续训：& ".venv\Scripts\python.exe" scripts/train_sft.py --resume out/sft/latest.pt
+
+# 5) 命令行对话（/reset 清空历史，/quit 退出）
+& ".venv\Scripts\python.exe" scripts/chat.py --mode chat
+
+# 6) 自动评测（18 条单轮 + 2 轮多轮召回，写入 out/sft/eval.md）
+& ".venv\Scripts\python.exe" scripts/eval_chat.py
+
+# 7) 网页（文本对话 + 图片描述/VQA；--check 只做冒烟构建）
+& ".venv\Scripts\python.exe" scripts/webapp.py
+& ".venv\Scripts\python.exe" scripts/webapp.py --check
+```
+
+> **能力边界**：这个 SFT 模型总计约 192M 参数，只在一个有界的中文对话样本上微调，
+> 是"**会简单聊天**"的教学模型，**不是可靠的事实助手**。`eval_chat.py` 只检查
+> 非空 / 不重复 / 能停止并记录通过数，**不设阈值、不会失败**；多轮召回是观察项。
