@@ -79,3 +79,45 @@ def load_pretrain(spec: dict, tok) -> np.ndarray:
         return np.asarray(tok.encode(CORPUS), dtype=np.int64)
     from src.data import load_bin
     return np.asarray(load_bin(spec["path"]), dtype=np.int64)
+
+
+class PretrainBatches:
+    """随机取样 (x, y=next-token) 的预训练批次。"""
+
+    def __init__(self, data: np.ndarray, batch_size: int, block: int, device: str):
+        self.data = data
+        self.batch_size = int(batch_size)
+        self.block = int(block)
+        self.device = device
+
+    def next(self):
+        import torch
+        n = len(self.data)
+        hi = max(n - self.block - 1, 1)
+        ix = np.random.randint(0, hi, size=self.batch_size)
+        x = np.stack([self.data[i:i + self.block] for i in ix])
+        y = np.stack([self.data[i + 1:i + 1 + self.block] for i in ix])
+        return (torch.from_numpy(x.astype("int64")).to(self.device),
+                torch.from_numpy(y.astype("int64")).to(self.device))
+
+
+class SFTBatches:
+    """从 npz 随机取样本，按批内最大长度 padding。"""
+
+    def __init__(self, npz_path: str, batch_size: int, max_len: int,
+                 pad_id: int, device: str):
+        from src.sft_data import SFTDataset
+        self.ds = SFTDataset(npz_path)
+        self.batch_size = int(batch_size)
+        self.max_len = int(max_len)
+        self.pad_id = int(pad_id)
+        self.device = device
+
+    def next(self):
+        import torch
+        from src.sft_data import collate_sft
+        n = len(self.ds)
+        idx = np.random.randint(0, max(n, 1), size=self.batch_size)
+        batch = [self.ds[int(k)] for k in idx]
+        out = collate_sft(batch, self.pad_id, self.max_len)
+        return (out["input_ids"].to(self.device), out["labels"].to(self.device))
