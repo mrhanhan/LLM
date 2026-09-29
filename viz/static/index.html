@@ -26,12 +26,26 @@
   </header>
   <aside id="left">
     <div class="train-panel" id="train-panel">
-      <label class="arch-label" for="train-target">训练目标</label>
+      <label class="arch-label" for="train-target">模型</label>
       <select id="train-target">
         <option value="live">实时小模型（d_model=64 / 4 层）</option>
         <option value="ckpt">192M 微调（--ckpt 权重）</option>
         <option value="scratch">192M 从头训练</option>
       </select>
+      <label class="arch-label" for="train-mode">训练方式</label>
+      <select id="train-mode">
+        <option value="pretrain">预训练（next-token）</option>
+        <option value="sft">SFT（只监督助手）</option>
+      </select>
+      <label class="arch-label" for="train-dataset">训练数据集</label>
+      <select id="train-dataset"></select>
+      <div class="train-grid">
+        <label>最大步数<input id="hp-max-steps" type="number" min="1" step="1" value="200"></label>
+        <label>学习率<input id="hp-lr" type="number" min="0" step="0.0001" value="0.0003"></label>
+        <label>batch<input id="hp-batch" type="number" min="1" step="1" value="8"></label>
+        <label>梯度累积<input id="hp-accum" type="number" min="1" step="1" value="1"></label>
+      </div>
+      <label class="train-check"><input id="hp-hifi" type="checkbox"> 高保真模式（bf16 + warmup）</label>
       <div class="train-row">
         <button id="btn-train-start">开始训练</button>
         <button id="btn-train-stop" disabled>停止</button>
