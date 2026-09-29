@@ -28,3 +28,9 @@ def test_index_has_training_controls():
     for dom_id in ["train-target", "train-mode", "train-dataset",
                    "hp-max-steps", "hp-lr", "hp-batch", "hp-accum", "hp-hifi"]:
         assert f'id="{dom_id}"' in html, f"缺少 #{dom_id}"
+
+
+def test_main_has_train_config_wiring():
+    src = (STATIC / "js" / "main.js").read_text(encoding="utf-8")
+    assert "/api/datasets" in src
+    assert "train-dataset" in src and "hp-max-steps" in src and "hp-hifi" in src

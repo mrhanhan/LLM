@@ -249,6 +249,16 @@ const trainStatsEl = document.getElementById('train-stats');
 const startBtn = document.getElementById('btn-train-start');
 const stopBtn = document.getElementById('btn-train-stop');
 const trainTargetSel = document.getElementById('train-target');
+const trainModeSel = document.getElementById('train-mode');
+const trainDatasetSel = document.getElementById('train-dataset');
+const hpInputs = {
+  max_steps: document.getElementById('hp-max-steps'),
+  lr: document.getElementById('hp-lr'),
+  batch_size: document.getElementById('hp-batch'),
+  grad_accum: document.getElementById('hp-accum'),
+};
+const hifiCheck = document.getElementById('hp-hifi');
+let datasetList = [];
 const leftEl = document.getElementById('left');
 const trainPanel = document.getElementById('train-panel') || leftEl;
 const archPanel = document.getElementById('arch-panel');
@@ -288,10 +298,10 @@ function drawLoss() {
   ctx.stroke();
 }
 
-function updateTrainStats(step, loss, lr) {
+function updateTrainStats(step, loss, lr, total) {
   if (!trainStatsEl) return;
   const parts = [];
-  if (step != null) parts.push(`step ${step}`);
+  if (step != null) parts.push(total ? `step ${step}/${total}` : `step ${step}`);
   if (loss != null && Number.isFinite(Number(loss))) {
     parts.push(`loss ${Number(loss).toFixed(4)}`);
   }
@@ -300,6 +310,60 @@ function updateTrainStats(step, loss, lr) {
   }
   trainStatsEl.textContent = parts.length ? parts.join(' · ') : '未开始训练';
 }
+
+async function loadDatasets() {
+  try {
+    const res = await fetch('/api/datasets');
+    datasetList = res.ok ? await res.json() : [];
+  } catch (e) {
+    console.error('加载数据集失败', e);
+    datasetList = [];
+  }
+  filterDatasets();
+}
+
+function filterDatasets() {
+  if (!trainDatasetSel) return;
+  const mode = (trainModeSel && trainModeSel.value) || 'pretrain';
+  const prev = trainDatasetSel.value;
+  trainDatasetSel.replaceChildren();
+  for (const d of datasetList) {
+    if (d.kind !== mode) continue;
+    const opt = document.createElement('option');
+    opt.value = d.id;
+    opt.textContent = d.label + (d.available ? '' : '（文件缺失）');
+    opt.disabled = !d.available;
+    trainDatasetSel.appendChild(opt);
+  }
+  if (prev && [...trainDatasetSel.options].some((o) => o.value === prev)) {
+    trainDatasetSel.value = prev;
+  }
+}
+
+function readHyper() {
+  const read = (node, fallback) => {
+    const v = node ? Number(node.value) : NaN;
+    return Number.isFinite(v) ? v : fallback;
+  };
+  return {
+    max_steps: Math.max(1, Math.round(read(hpInputs.max_steps, 200))),
+    lr: read(hpInputs.lr, 3e-4),
+    batch_size: Math.max(1, Math.round(read(hpInputs.batch_size, 8))),
+    grad_accum: Math.max(1, Math.round(read(hpInputs.grad_accum, 1))),
+  };
+}
+
+function readTrainPayload() {
+  return {
+    target: (trainTargetSel && trainTargetSel.value) || 'live',
+    mode: (trainModeSel && trainModeSel.value) || 'pretrain',
+    dataset: (trainDatasetSel && trainDatasetSel.value) || 'corpus_qwen',
+    engine: hifiCheck && hifiCheck.checked ? 'hifi' : 'simple',
+    params: readHyper(),
+  };
+}
+
+function liveRefresh() {}
 
 function resetLoss() {
   lossHistory.length = 0;
@@ -329,6 +393,10 @@ function setTraining(on) {
   }
   if (stopBtn) stopBtn.disabled = !training;
   if (trainTargetSel) trainTargetSel.disabled = training;
+  if (trainModeSel) trainModeSel.disabled = training;
+  if (trainDatasetSel) trainDatasetSel.disabled = training;
+  if (hifiCheck) hifiCheck.disabled = training;
+  for (const node of Object.values(hpInputs)) if (node) node.disabled = training;
 }
 
 function markModeButtons(target) {
@@ -350,16 +418,16 @@ async function ensureSourceForTraining(target) {
 
 async function trainStart() {
   if (training) return;
-  const target = (trainTargetSel && trainTargetSel.value) || 'live';
-  if (!(await ensureSourceForTraining(target))) return;
-  markModeButtons(target);
+  const payload = readTrainPayload();
+  if (!(await ensureSourceForTraining(payload.target))) return;
+  markModeButtons(payload.target);
   const prev = training;
   setTraining(true);
   try {
     const res = await fetch('/api/train/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (e) {
@@ -379,6 +447,8 @@ async function trainStop() {
 
 startBtn?.addEventListener('click', trainStart);
 stopBtn?.addEventListener('click', trainStop);
+trainModeSel?.addEventListener('change', filterDatasets);
+await loadDatasets();
 drawLoss();
 
 let shelf = null;
@@ -585,7 +655,8 @@ connectWS((m) => {
     links?.update(m.values);
     maybeAutoExpand(m.values);
     pushLoss(m.loss);
-    updateTrainStats(m.step, m.loss, m.lr);
+    updateTrainStats(m.step, m.loss, m.lr, m.total_steps);
+    liveRefresh(m.step);
     return;
   }
   if (m.type === 'status') {
