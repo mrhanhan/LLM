@@ -20,6 +20,49 @@ function fmt(n) {
   return String(+v.toFixed(4));
 }
 
+// 渲染架构模块：desc + KaTeX 公式（逐条）+ 带围栏的源码。
+function appendModule(root, mod, title) {
+  if (!mod) return;
+  if (title) {
+    const h = document.createElement('h4');
+    h.style.cssText = 'margin:14px 0 6px;font-size:14px;color:#dfe6f3;';
+    h.textContent = title;
+    root.appendChild(h);
+  }
+  if (mod.desc) {
+    const d = document.createElement('div');
+    d.style.cssText = 'color:#9fb2d8;font-size:12px;margin:0 0 8px;';
+    d.textContent = mod.desc;
+    root.appendChild(d);
+  }
+  for (const tex of String(mod.tex || '').split(/\n/).filter((x) => x.trim())) {
+    const div = document.createElement('div');
+    div.style.cssText = 'margin:8px 0;overflow-x:auto;';
+    if (window.katex && window.katex.render) {
+      try {
+        window.katex.render(tex, div, { displayMode: true, throwOnError: false });
+      } catch (e) {
+        div.textContent = tex;
+      }
+    } else {
+      div.textContent = tex;
+    }
+    root.appendChild(div);
+  }
+  if (mod.code) {
+    const pre = document.createElement('pre');
+    pre.style.cssText =
+      'margin:8px 0;padding:10px;border-radius:8px;overflow-x:auto;' +
+      'background:#0a1020;border:1px solid #1d2a44;font-size:11px;line-height:1.5;';
+    const code = document.createElement('code');
+    code.textContent = String(mod.code)
+      .replace(/^```[a-z]*\n?/, '')
+      .replace(/```$/, '');
+    pre.appendChild(code);
+    root.appendChild(pre);
+  }
+}
+
 export class Panel {
   constructor(rootEl) {
     this.root = rootEl;
@@ -264,6 +307,55 @@ export class Panel {
     ctx.fillRect(0, 0, this.legendCv.width, this.legendCv.height);
     this.vminEl.textContent = `min ${fmt(stats.vmin)}`;
     this.vmaxEl.textContent = `max ${fmt(stats.vmax)}`;
+  }
+
+  // 架构浏览器：点击层板/模块板在抽屉里显示 KaTeX 公式与源码。
+  showArchLayer(spec, info = {}) {
+    this.root.classList.remove('hidden');
+    this.built = false;
+    this.seq += 1;
+    const body = this.body;
+    body.replaceChildren();
+
+    const h = document.createElement('h2');
+    h.style.cssText = 'margin:0 0 6px;font-size:16px;color:#dfe6f3;';
+    body.appendChild(h);
+
+    if (info.kind === 'module') {
+      h.textContent = info.label || '模块';
+      if (info.mod) {
+        appendModule(body, info.mod, '');
+      } else {
+        const d = document.createElement('div');
+        d.style.cssText = 'color:#9fb2d8;font-size:12px;';
+        d.textContent = '（仅结构占位，无公式/源码）';
+        body.appendChild(d);
+      }
+    } else {
+      const rows = (spec && spec.rows) || [];
+      const row = rows[info.idx] || {};
+      const at = ((spec && spec.attn_specs) || {})[row.attn] || {};
+      const ft = ((spec && spec.ffn_specs) || {})[row.ffn] || {};
+      h.textContent = `层 ${info.idx}`;
+      if (row.note) {
+        const nt = document.createElement('div');
+        nt.style.cssText = 'color:#9fb2d8;font-size:12px;margin:0 0 6px;';
+        nt.textContent = `说明：${row.note}`;
+        body.appendChild(nt);
+      }
+      appendModule(body, at, `Attention · ${at.label || ''}`);
+      appendModule(body, ft, `FFN/MoE · ${ft.label || ''}`);
+    }
+
+    for (const e of (spec && spec.extra_specs) || []) {
+      appendModule(body, e, e.label || '');
+    }
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '关闭';
+    closeBtn.style.cssText = BASE_BTN + 'margin-top:14px;';
+    closeBtn.onclick = () => this.close();
+    body.appendChild(closeBtn);
   }
 
   close() {

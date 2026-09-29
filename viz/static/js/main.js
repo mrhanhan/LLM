@@ -6,6 +6,7 @@ import { Links, Flow } from './links.js';
 import { cellFromIntersection } from './matrix.js';
 import { Panel } from './panel.js';
 import { showCloud, resizeCloud, disposeCloud } from './cloud.js';
+import { loadArchList, showArch, getArchSpec } from './arch.js';
 
 const panel = new Panel(document.getElementById('drawer'));
 window.__panel = panel;
@@ -31,6 +32,19 @@ panel.cloudGroup = cloudGroup;
 
 const flowGroup = new THREE.Group();
 scene.add(flowGroup);
+
+const archGroup = new THREE.Group();
+archGroup.visible = false;
+scene.add(archGroup);
+
+// 架构层栈很高，按总高重新摆相机。
+window.__frameArch = (height) => {
+  const fov = (camera.fov * Math.PI) / 180;
+  const dist = Math.max(14, ((height / 2) / Math.tan(fov / 2)) * 1.2);
+  camera.position.set(0, 0, dist);
+  controls.target.set(0, 0, 0);
+  controls.update();
+};
 
 const CLOUD_BTN_STYLE =
   'margin-top:10px;padding:5px 12px;border-radius:8px;cursor:pointer;' +
@@ -118,7 +132,11 @@ const lossCanvas = document.getElementById('loss');
 const trainStatsEl = document.getElementById('train-stats');
 const startBtn = document.getElementById('btn-train-start');
 const stopBtn = document.getElementById('btn-train-stop');
-const trainPanel = document.getElementById('left');
+const leftEl = document.getElementById('left');
+const trainPanel = document.getElementById('train-panel') || leftEl;
+const archPanel = document.getElementById('arch-panel');
+const archSelect = document.getElementById('arch-model');
+const archMeta = document.getElementById('arch-meta');
 const LOSS_MAX = 160;
 const lossHistory = [];
 let training = false;
@@ -182,6 +200,8 @@ function pushLoss(loss) {
 
 function setTrainPanel(visible) {
   if (trainPanel) trainPanel.style.display = visible ? 'block' : 'none';
+  if (archPanel) archPanel.style.display = 'none';
+  if (leftEl) leftEl.style.display = visible ? 'block' : 'none';
 }
 
 function setTraining(on) {
@@ -223,6 +243,11 @@ let shelf = null;
 let links = null;
 let flow = null;
 let source = 'live';
+let viewMode = 'live';
+let archList = null;
+let archSeq = 0;
+let archSelectReady = false;
+let savedCamera = null;
 window.__shelf = null;
 window.__links = null;
 window.__flow = null;
@@ -376,6 +401,10 @@ function visibleMatrices() {
 
 renderer.domElement.addEventListener('pointermove', (e) => {
   if (!shelf || !hoverEl) return;
+  if (viewMode === 'arch') {
+    hoverEl.textContent = '';
+    return;
+  }
   setPointer(e);
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(visibleMatrices(), false);
@@ -408,12 +437,21 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 });
 
 renderer.domElement.addEventListener('pointerup', (e) => {
-  if (!shelf || !pointerDown) return;
+  if (!pointerDown) return;
   const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
   pointerDown = null;
   if (moved > 5) return;
   setPointer(e);
   raycaster.setFromCamera(pointer, camera);
+  if (viewMode === 'arch') {
+    const hits = raycaster.intersectObjects(archGroup.children, true);
+    const hit = hits.find(
+      (h) => h.object.userData && h.object.userData.pickable
+    );
+    if (hit) panel.showArchLayer(getArchSpec(), hit.object.userData);
+    return;
+  }
+  if (!shelf) return;
   const candidates = shelf.meshes.filter((m) => m.visible);
   const hits = raycaster.intersectObjects(candidates, false);
   if (!hits.length) return;
@@ -435,21 +473,119 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
-// 顶栏模式切换：live/ckpt 重建数据源；arch 留给 Task 16
+// 顶栏模式切换：live/ckpt 重建权重书架；arch 只切换结构视图（不取权重）。
+function populateArchSelect() {
+  if (!archSelect || !archList) return;
+  if (archSelectReady) return;
+  archSelectReady = true;
+  archSelect.replaceChildren();
+  for (const m of archList) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name || m.id;
+    archSelect.appendChild(opt);
+  }
+  archSelect.addEventListener('change', () => renderArch(archSelect.value));
+}
+
+async function renderArch(modelId) {
+  if (!modelId) return;
+  const seq = ++archSeq;
+  try {
+    await showArch(archGroup, panel, modelId);
+  } catch (e) {
+    if (seq === archSeq) console.error('加载架构失败', modelId, e);
+    return;
+  }
+  if (seq !== archSeq) return;
+  const spec = getArchSpec();
+  if (!spec) return;
+  const p = spec.params || {};
+  if (archMeta) {
+    archMeta.textContent = [
+      spec.vendor, spec.family, spec.released,
+      p.total, p.layers ? `${p.layers} 层` : '',
+    ].filter(Boolean).join(' · ');
+  }
+  if (badgeModel) badgeModel.textContent = spec.name || modelId;
+  if (badgeDevice) badgeDevice.textContent = '结构视图';
+}
+
+async function enterArch() {
+  if (!archList) {
+    try {
+      archList = await loadArchList();
+    } catch (e) {
+      console.error('加载架构列表失败', e);
+      return false;
+    }
+  }
+  if (viewMode !== 'arch') {
+    savedCamera = { pos: camera.position.clone(), target: controls.target.clone() };
+  }
+  viewMode = 'arch';
+  cloudOff();
+  window.__panel?.close?.();
+  modelGroup.visible = false;
+  flowGroup.visible = false;
+  cloudGroup.visible = false;
+  archGroup.visible = true;
+  if (trainPanel) trainPanel.style.display = 'none';
+  if (archPanel) archPanel.style.display = 'block';
+  if (leftEl) leftEl.style.display = 'block';
+  populateArchSelect();
+  await renderArch(archSelect?.value || (archList[0] && archList[0].id));
+  return true;
+}
+
+function showWeightGroups() {
+  archGroup.visible = false;
+  modelGroup.visible = true;
+  flowGroup.visible = true;
+  cloudGroup.visible = true;
+  if (archPanel) archPanel.style.display = 'none';
+}
+
+function exitArch() {
+  if (viewMode !== 'arch') return;
+  showWeightGroups();
+  if (savedCamera) {
+    camera.position.copy(savedCamera.pos);
+    controls.target.copy(savedCamera.target);
+    controls.update();
+    savedCamera = null;
+  }
+  if (leftEl) leftEl.style.display = source === 'live' ? 'block' : 'none';
+  if (trainPanel) trainPanel.style.display = source === 'live' ? 'block' : 'none';
+  if (shelf) setBadges(shelf.graph);
+}
+
+async function switchMode(mode) {
+  if (mode === 'arch') return enterArch();
+  if (viewMode === 'arch') exitArch();
+  if (mode === source && !archGroup.visible) {
+    showWeightGroups();
+    return true;
+  }
+  const ok = await reload(mode);
+  if (ok) {
+    viewMode = mode;
+    showWeightGroups();
+  }
+  return ok;
+}
+
 const modeButtons = Array.from(document.querySelectorAll('.viewswitch button'));
 for (const btn of modeButtons) {
   btn.addEventListener('click', async () => {
     const mode = btn.dataset.mode;
-    if (mode === 'arch') {
-      console.info('架构浏览器（arch）由 Task 16 实现');
-      return;
-    }
-    if (mode === source) return;
-    const ok = await reload(mode);
+    const prev = viewMode;
+    const ok = await switchMode(mode);
+    if (!ok) viewMode = prev;
     for (const b of modeButtons) {
-      b.classList.toggle('active', b.dataset.mode === (ok ? mode : source));
+      b.classList.toggle('active', b.dataset.mode === (ok ? mode : viewMode));
     }
-    if (!ok) console.error(`切换到 ${mode} 失败，保持 ${source}`);
+    if (!ok) console.error(`切换到 ${mode} 失败`);
   });
 }
 

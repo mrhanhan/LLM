@@ -78,3 +78,7 @@ html, body { margin: 0; height: 100%; overflow: hidden;
 button { cursor: pointer; }
 input, select { width: 100%; padding: 6px 8px; border-radius: 7px; font-size: 13px;
   background: #0b1226; color: var(--text); border: 1px solid #243454; }
+
+.arch-label { display: block; color: var(--muted-2); font-size: 12px; margin-bottom: 6px; }
+#arch-meta { margin-top: 9px; color: var(--muted-2); font-size: 12px;
+  line-height: 1.5; font-variant-numeric: tabular-nums; }
