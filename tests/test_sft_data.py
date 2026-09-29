@@ -74,3 +74,44 @@ def test_iter_sft_examples_alternates_roles(tmp_path):
         roles = [m["role"] for m in conv["messages"]]
         assert roles == ["user", "assistant"] * (len(roles) // 2)
         assert len(roles) >= 2
+
+
+import numpy as np
+import torch
+from src.sft_data import (SFTDataset, collate_sft, save_sft_npz, tokenize_examples)
+from src.tokenizer import CharTokenizer
+
+SAMPLE = [{"messages": [{"role": "user", "content": "问"} ,
+                        {"role": "assistant", "content": "答"}]}]
+
+
+def _tok():
+    return CharTokenizer.train(["问答复你好"], max_chars=100)
+
+
+def test_tokenize_and_npz_roundtrip(tmp_path):
+    tok = _tok()
+    p = tmp_path / "t.npz"
+    n = save_sft_npz(tok, SAMPLE, str(p), max_len=64)
+    assert n == 1
+    ds = SFTDataset(str(p))
+    assert len(ds) == 1
+    ids, labels = ds[0]
+    assert len(ids) == len(labels)
+    assert any(l != -100 for l in labels)
+
+
+def test_tokenize_skips_examples_without_supervision():
+    tok = _tok()
+    bad = [{"messages": [{"role": "user", "content": "只有用户"}]}]
+    arrays, n = tokenize_examples(tok, bad, max_len=64)
+    assert n == 0 and len(arrays["offsets"]) == 1
+
+
+def test_collate_pads_and_masks():
+    tok = _tok()
+    batch = [([1, 2, 3, 4], [-100, -100, 5, 6]), ([1, 2], [-100, 7])]
+    out = collate_sft(batch, pad_id=0)
+    assert out["input_ids"].shape == (2, 4)
+    assert out["labels"].tolist()[1][2:] == [-100, -100]
+    assert isinstance(out["input_ids"], torch.Tensor)

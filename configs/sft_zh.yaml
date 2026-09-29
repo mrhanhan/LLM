@@ -1,0 +1,34 @@
+model:
+  vocab_size: 151666
+  d_model: 768
+  n_layer: 12
+  n_head: 12
+  n_kv_head: 4
+  d_ff: 2048
+  ctx_len: 2048
+  dropout: 0.0
+  tie_embeddings: true
+data:
+  tokenizer_kind: qwen
+  tokenizer_dir: data/tokenizer/qwen2.5-0.5b
+  train_bin: data/processed/text/fineweb_cmn.train.bin
+  val_bin: data/processed/text/fineweb_cmn.val.bin
+  hf_endpoint: ""
+  proxy: "http://127.0.0.1:7890"
+  sft_train: data/processed/sft/train.npz
+  sft_val: data/processed/sft/val.npz
+  max_len: 2048
+train:
+  batch_size: 8
+  grad_accum: 4
+  lr: 1.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 50
+  max_steps: 1500
+  eval_interval: 100
+  save_interval: 300
+  log_interval: 20
+  out_dir: out/sft
+  dtype: bf16
+  compile: false
+  seed: 42

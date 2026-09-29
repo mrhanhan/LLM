@@ -78,3 +78,81 @@ def iter_sft_examples(paths: list[str], max_items: int | None = None,
         else:
             yield {"messages": _turn(*pairs[i])}
             i += 1
+
+
+def tokenize_examples(tok, examples, max_len: int):
+    """把对话样本编码成扁平 int32 数组 + offsets；无监督信号的样本丢弃。
+
+    返回 (arrays, n_kept)，arrays 含 ids/labels/offsets 三个键。
+    """
+    import numpy as np
+
+    from src.chat_format import build_sft_example, has_supervision
+
+    ids_all: list[int] = []
+    lab_all: list[int] = []
+    offsets: list[int] = [0]
+    n_kept = 0
+    for ex in examples:
+        ids, labels = build_sft_example(tok, ex["messages"], max_len=max_len)
+        if not ids or not has_supervision(labels):
+            continue
+        ids_all.extend(int(i) for i in ids)
+        lab_all.extend(int(l) for l in labels)
+        offsets.append(len(ids_all))
+        n_kept += 1
+    arrays = {
+        "ids": np.array(ids_all, dtype=np.int32),
+        "labels": np.array(lab_all, dtype=np.int32),
+        "offsets": np.array(offsets, dtype=np.int64),
+    }
+    return arrays, n_kept
+
+
+def save_sft_npz(tok, examples, path: str, max_len: int) -> int:
+    """编码并写 npz，返回保留的样本数。"""
+    import numpy as np
+
+    arrays, n = tokenize_examples(tok, examples, max_len)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **arrays)
+    return n
+
+
+class SFTDataset:
+    """读取 npz 的 SFT 数据集：__getitem__ 返回 (ids, labels)（变长）。"""
+
+    def __init__(self, npz_path: str):
+        import numpy as np
+
+        z = np.load(npz_path)
+        self.ids = z["ids"]
+        self.labels = z["labels"]
+        self.offsets = z["offsets"]
+
+    def __len__(self) -> int:
+        return int(len(self.offsets) - 1)
+
+    def __getitem__(self, i: int):
+        s, e = int(self.offsets[i]), int(self.offsets[i + 1])
+        return self.ids[s:e].astype("int64"), self.labels[s:e].astype("int64")
+
+
+def collate_sft(batch, pad_id: int, max_len: int | None = None) -> dict:
+    """按 batch 内最大长度 padding；ids 补 pad_id，labels 补 -100。"""
+    import torch
+
+    maxlen = max(len(ids) for ids, _ in batch)
+    if max_len is not None:
+        maxlen = min(maxlen, max_len)
+    inputs, labels = [], []
+    for ids, lab in batch:
+        ids = list(ids)[:maxlen]
+        lab = list(lab)[:maxlen]
+        pad = maxlen - len(ids)
+        inputs.append(ids + [pad_id] * pad)
+        labels.append(lab + [-100] * pad)
+    return {
+        "input_ids": torch.tensor(inputs, dtype=torch.long),
+        "labels": torch.tensor(labels, dtype=torch.long),
+    }
