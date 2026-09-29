@@ -4,7 +4,7 @@ import { getModel, getCell } from './api.js';
 import { Shelf } from './shelf.js';
 import { cellFromIntersection } from './matrix.js';
 import { Panel } from './panel.js';
-import { showCloud, resizeCloud } from './cloud.js';
+import { showCloud, resizeCloud, disposeCloud } from './cloud.js';
 
 const panel = new Panel(document.getElementById('drawer'));
 window.__panel = panel;
@@ -32,10 +32,12 @@ const CLOUD_BTN_STYLE =
   'font-size:12px;border:1px solid #22345a;background:#0e1730;color:#9fb2d8;';
 let cloudOn = false;
 let cloudMatrix = null;
+let cloudSeq = 0;
 
 function refreshCloudBtn() {
   const btn = document.getElementById('cloudBtn');
-  if (btn) btn.textContent = cloudOn ? '关闭点云' : '点云';
+  if (!btn || btn.disabled) return;
+  btn.textContent = cloudOn ? '关闭点云' : '点云';
 }
 
 async function onCloudClick() {
@@ -43,26 +45,44 @@ async function onCloudClick() {
   if (!cloudMatrix) return;
   if (cloudOn) {
     cloudOn = false;
-    cloudGroup.clear();
+    cloudSeq += 1;
+    disposeCloud(cloudGroup);
     refreshCloudBtn();
     return;
   }
   cloudOn = true;
-  if (btn) btn.textContent = '加载中…';
+  const mySeq = ++cloudSeq;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '加载中…';
+  }
   try {
-    await showCloud(cloudGroup, cloudMatrix, SOURCE);
-    refreshCloudBtn();
+    const rendered = await showCloud(
+      cloudGroup,
+      cloudMatrix,
+      SOURCE,
+      160,
+      () => mySeq !== cloudSeq
+    );
+    if (mySeq !== cloudSeq) return;
+    if (!rendered) cloudOn = false;
   } catch (e) {
+    if (mySeq !== cloudSeq) return;
     cloudOn = false;
-    refreshCloudBtn();
     console.error('点云加载失败', e);
+  } finally {
+    if (mySeq === cloudSeq && btn) {
+      btn.disabled = false;
+      refreshCloudBtn();
+    }
   }
 }
 
 function mountCloudControl(spec) {
   cloudMatrix = spec.name;
   cloudOn = false;
-  cloudGroup.clear();
+  cloudSeq += 1;
+  disposeCloud(cloudGroup);
   const body = panel.body;
   let btn = document.getElementById('cloudBtn');
   if (!btn) {
@@ -73,6 +93,7 @@ function mountCloudControl(spec) {
     btn.onclick = onCloudClick;
     body.append(btn);
   }
+  btn.disabled = false;
   refreshCloudBtn();
 }
 

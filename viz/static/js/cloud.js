@@ -97,7 +97,7 @@ function buildEdges(group, edges, inPts, outPts) {
   });
 }
 
-function clearCloud(group) {
+export function disposeCloud(group) {
   for (const m of lineMats) m.dispose?.();
   lineMats.length = 0;
   group.traverse((o) => {
@@ -111,12 +111,14 @@ export function resizeCloud(w, h) {
   for (const m of lineMats) m.resolution.set(w, h);
 }
 
-export async function showCloud(group, matrix, source = 'live', n = 160) {
-  clearCloud(group);
+export async function showCloud(group, matrix, source = 'live', n = 160, isStale) {
   const data = await getNeurons(modulePath(matrix), source, n);
+  if (isStale && isStale()) return false;
   if (data.error) throw new Error(data.error);
+  disposeCloud(group);
   const inPts = merge(data.in_coords || [], data.in_norm || []);
   const outPts = merge(data.out_coords || [], data.out_norm || []);
   group.add(cluster(inPts, -2.8), cluster(outPts, 2.8));
   buildEdges(group, data.edges, inPts, outPts);
+  return true;
 }
