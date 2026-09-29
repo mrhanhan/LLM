@@ -49,7 +49,7 @@
 
 ---
 
-## Task S1: HF 访问配置
+## Task 1: HF 访问配置
 
 **Files:**
 - Create: `src/hfenv.py`
@@ -166,12 +166,12 @@ Run: `& ".venv\Scripts\python.exe" -m pytest tests/ -q`；Expected: 全绿。
 
 ```bash
 git add src/hfenv.py src/config.py src/data.py scripts/prepare_data_part1.py tests/test_hfenv.py
-git commit -m "feat: configurable HF access (proxy direct / mirror) for SFT data pipeline (Task S1)"
+git commit -m "feat: configurable HF access (proxy direct / mirror) for SFT data pipeline (Task 1)"
 ```
 
 ---
 
-## Task S2: fineweb-2 远程文本读取
+## Task 2: fineweb-2 远程文本读取
 
 **Files:**
 - Modify: `src/data.py`（追加函数）
@@ -290,12 +290,12 @@ def read_fineweb_cached(repo: str, lang: str, split: str, shard: str,
 
 ```bash
 git add src/data.py tests/test_fineweb_reader.py
-git commit -m "feat: stream fineweb-2 parquet by row-group with local text cache (Task S2)"
+git commit -m "feat: stream fineweb-2 parquet by row-group with local text cache (Task 2)"
 ```
 
 ---
 
-## Task S3: 预训练数据准备脚本 + 预训练配置
+## Task 3: 预训练数据准备脚本 + 预训练配置
 
 **Files:**
 - Create: `scripts/prepare_pretrain_data.py`、`configs/gpt_fineweb.yaml`
@@ -399,19 +399,19 @@ Expected: 打印 `完成：train=... tokens, val=... tokens`；`data/raw/text/fi
 
 ```bash
 git add scripts/prepare_pretrain_data.py configs/gpt_fineweb.yaml
-git commit -m "feat: pretrain data prep script + fineweb 2048 config (Task S3)"
+git commit -m "feat: pretrain data prep script + fineweb 2048 config (Task 3)"
 ```
 
 ---
 
-## Task S4: 预训练跑通（ctx 2048）
+## Task 4: 预训练跑通（ctx 2048）
 
 **Files:**
 - 复用 `scripts/train_gpt.py`、`configs/gpt_fineweb.yaml`
 - 产物：`out/gpt_pretrain/{latest.pt,metrics.jsonl,loss.png}`
 
 **Interfaces:**
-- Produces: `out/gpt_pretrain/latest.pt`（供 Task S8 初始化）
+- Produces: `out/gpt_pretrain/latest.pt`（供 Task 8 初始化）
 
 - [ ] **Step 1: 全量数据准备**
 
@@ -442,12 +442,12 @@ Expected: 2000 步跑完；`loss.png` 的 val loss 相对首步下降 > 40%。
 
 ```bash
 git add -A
-git commit -m "chore: pretrain run at ctx=2048 (Task S4)" --allow-empty
+git commit -m "chore: pretrain run at ctx=2048 (Task 4)" --allow-empty
 ```
 
 ---
 
-## Task S5: 对话模板 `src/chat_format.py`
+## Task 5: 对话模板 `src/chat_format.py`
 
 **Files:**
 - Create: `src/chat_format.py`
@@ -644,12 +644,12 @@ def history_to_messages(history) -> list[dict]:
 
 ```bash
 git add src/chat_format.py tests/test_chat_format.py
-git commit -m "feat: Qwen chat template + assistant-only SFT labels (Task S5)"
+git commit -m "feat: Qwen chat template + assistant-only SFT labels (Task 5)"
 ```
 
 ---
 
-## Task S6: SFT 数据归一化与多轮合成
+## Task 6: SFT 数据归一化与多轮合成
 
 **Files:**
 - Create: `src/sft_data.py`
@@ -797,12 +797,12 @@ def iter_sft_examples(paths: list[str], max_items: int | None = None,
 
 ```bash
 git add src/sft_data.py tests/test_sft_data.py
-git commit -m "feat: SFT data normalization + multi-turn synthesis (Task S6)"
+git commit -m "feat: SFT data normalization + multi-turn synthesis (Task 6)"
 ```
 
 ---
 
-## Task S7: SFT 分词落盘 + Dataset + collate + 数据脚本
+## Task 7: SFT 分词落盘 + Dataset + collate + 数据脚本
 
 **Files:**
 - Modify: `src/sft_data.py`（追加）
@@ -1067,16 +1067,16 @@ Expected: 下载两个文件并打印 `完成：train=...`；`data/processed/sft
 
 ```bash
 git add src/sft_data.py scripts/prepare_sft_data.py configs/sft_zh.yaml tests/test_sft_data.py
-git commit -m "feat: SFT tokenize-to-npz, Dataset/collate, data prep script, and SFT config (Task S7)"
+git commit -m "feat: SFT tokenize-to-npz, Dataset/collate, data prep script, and SFT config (Task 7)"
 ```
 
 ---
 
-## Task S8: SFTTrainer + 训练脚本 + 配置
+## Task 8: SFTTrainer + 训练脚本 + 配置
 
 **Files:**
 - Modify: `src/trainer.py`（追加 `SFTTrainer`）
-- Create: `scripts/train_sft.py`（配置 `configs/sft_zh.yaml` 由 Task S7 创建）
+- Create: `scripts/train_sft.py`（配置 `configs/sft_zh.yaml` 由 Task 7 创建）
 - Test: `tests/test_sft_trainer.py`
 
 **Interfaces:**
@@ -1084,7 +1084,7 @@ git commit -m "feat: SFT tokenize-to-npz, Dataset/collate, data prep script, and
 - Produces: `class SFTTrainer(Trainer)`，签名 `(model, train_cfg, train_ds, tokenizer, max_len=2048, val_ds=None, device=None)`
 - Produces: `out/sft/latest.pt`
 
-- [ ] **Step 1: 确认配置文件存在**（`configs/sft_zh.yaml` 已由 Task S7 创建）
+- [ ] **Step 1: 确认配置文件存在**（`configs/sft_zh.yaml` 已由 Task 7 创建）
 
 Run: `Test-Path configs/sft_zh.yaml`；Expected: `True`。
 
@@ -1257,12 +1257,12 @@ Run: `& ".venv\Scripts\python.exe" -m pytest tests/ -q`；Expected: 全绿。
 
 ```bash
 git add src/trainer.py scripts/train_sft.py tests/test_sft_trainer.py
-git commit -m "feat: SFTTrainer (assistant-masked loss) + train_sft entry (Task S8)"
+git commit -m "feat: SFTTrainer (assistant-masked loss) + train_sft entry (Task 8)"
 ```
 
 ---
 
-## Task S9: `generate` 支持停止 token + `chat.py` 多轮
+## Task 9: `generate` 支持停止 token + `chat.py` 多轮
 
 **Files:**
 - Modify: `src/generate.py`、`scripts/chat.py`
@@ -1431,7 +1431,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 6: 冒烟测试对话**（需 S8 已产出 `out/sft/latest.pt`；若没有，用 `--mode base` 验证脚本可跑）
+- [ ] **Step 6: 冒烟测试对话**（需 Task 8 已产出 `out/sft/latest.pt`；若没有，用 `--mode base` 验证脚本可跑）
 
 Run:
 ```powershell
@@ -1446,12 +1446,12 @@ Run: `& ".venv\Scripts\python.exe" -m pytest tests/ -q`；Expected: 全绿。
 
 ```bash
 git add src/generate.py scripts/chat.py tests/test_generate_stop.py
-git commit -m "feat: stop_ids in generate + multi-turn chat CLI with --mode (Task S9)"
+git commit -m "feat: stop_ids in generate + multi-turn chat CLI with --mode (Task 9)"
 ```
 
 ---
 
-## Task S10: 自动评测（`src/chat_eval.py` + `scripts/eval_chat.py`）
+## Task 10: 自动评测（`src/chat_eval.py` + `scripts/eval_chat.py`）
 
 **Files:**
 - Create: `src/chat_eval.py`（纯函数 + 固定题库，可单测）、`scripts/eval_chat.py`（运行器）
@@ -1607,12 +1607,12 @@ if __name__ == "__main__":
 
 ```bash
 git add src/chat_eval.py scripts/eval_chat.py tests/test_chat_eval.py
-git commit -m "feat: automated chat eval (non-empty / no-repeat / stop / multi-turn recall) (Task S10)"
+git commit -m "feat: automated chat eval (non-empty / no-repeat / stop / multi-turn recall) (Task 10)"
 ```
 
 ---
 
-## Task S11: webapp 多轮文本聊天
+## Task 11: webapp 多轮文本聊天
 
 **Files:**
 - Modify: `scripts/webapp.py`
@@ -1686,12 +1686,12 @@ Expected: 打印 `[check] 界面构建成功；VLM 可用：True`（且不报 Ch
 
 ```bash
 git add scripts/webapp.py
-git commit -m "feat: multi-turn Gradio ChatInterface for SFT chat (Task S11)"
+git commit -m "feat: multi-turn Gradio ChatInterface for SFT chat (Task 11)"
 ```
 
 ---
 
-## Task S12: 文档与最终验收
+## Task 12: 文档与最终验收
 
 **Files:**
 - Create: `docs/05-sft.md`
@@ -1728,21 +1728,21 @@ Expected: 测试全绿；评测打印通过数与 `out/sft/eval.md`，其中非�
 
 ```bash
 git add docs/05-sft.md README.md
-git commit -m "docs: SFT guide + README milestones and chat usage (Task S12)"
+git commit -m "docs: SFT guide + README milestones and chat usage (Task 12)"
 ```
 
 ---
 
 ## Self-Review（对照 spec 检查）
 
-- **Spec §4.1 预训练源** → Task S2/S3 覆盖（`iter_parquet_text`/`read_fineweb_cached` + `prepare_pretrain_data.py`）。
-- **Spec §4.2 SFT 源与多轮合成** → Task S6/S7 覆盖。
-- **Spec §5.1 hfenv** → Task S1 覆盖。
-- **Spec §5.2 chat_format（只监督助手/停止/剥离/history）** → Task S5 覆盖。
-- **Spec §5.3 SFTDataset/collate/SFTTrainer** → Task S7/S8 覆盖。
-- **Spec §5.4 ctx=2048 预训练** → Task S3/S4 覆盖。
-- **Spec §5.5 stop_ids/chat.py/webapp/eval** → Task S9/S10/S11 覆盖。
-- **Spec §8 测试与验收** → 5 个新测试文件 + Task S12 端到端验收覆盖。
-- **Spec §6 依赖** → Task S1 前需 `pyarrow`（已装）；无新增未列依赖。
+- **Spec §4.1 预训练源** → Task 2/3 覆盖（`iter_parquet_text`/`read_fineweb_cached` + `prepare_pretrain_data.py`）。
+- **Spec §4.2 SFT 源与多轮合成** → Task 6/7 覆盖。
+- **Spec §5.1 hfenv** → Task 1 覆盖。
+- **Spec §5.2 chat_format（只监督助手/停止/剥离/history）** → Task 5 覆盖。
+- **Spec §5.3 SFTDataset/collate/SFTTrainer** → Task 7/8 覆盖。
+- **Spec §5.4 ctx=2048 预训练** → Task 3/4 覆盖。
+- **Spec §5.5 stop_ids/chat.py/webapp/eval** → Task 9/10/11 覆盖。
+- **Spec §8 测试与验收** → 5 个新测试文件 + Task 12 端到端验收覆盖。
+- **Spec §6 依赖** → Task 1 前需 `pyarrow`（已装）；无新增未列依赖。
 - **类型一致性**：`build_sft_example`/`has_supervision`/`collate_sft`/`SFTDataset`/`SFTTrainer`/`stop_ids`/`history_to_messages` 在各 Task 中名称与签名一致。
-- **已消除的易错点**：`generate` 增加 `stop_ids` 而非改返回值；`im_*_id` 对无 `.hf` 的分词器有回退（便于用 `CharTokenizer` 做快速过拟合测试）；`_segment` 把轮末 `\n` 与 `<|im_end|>` 拆开，避免误监督换行；`build_sft_example` 自动补 system 段，与 `render_messages` 前缀一致（训练/推理不漂移）；S10 的纯逻辑放 `src/chat_eval.py`，避免测试去 import `scripts/`。
+- **已消除的易错点**：`generate` 增加 `stop_ids` 而非改返回值；`im_*_id` 对无 `.hf` 的分词器有回退（便于用 `CharTokenizer` 做快速过拟合测试）；`_segment` 把轮末 `\n` 与 `<|im_end|>` 拆开，避免误监督换行；`build_sft_example` 自动补 system 段，与 `render_messages` 前缀一致（训练/推理不漂移）；Task 10 的纯逻辑放 `src/chat_eval.py`，避免测试去 import `scripts/`。
