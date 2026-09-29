@@ -7,9 +7,21 @@ from __future__ import annotations
 
 SYSTEM_PROMPT = "你是一个乐于助人的中文助手。"
 
+_TURN_END = "<|im_end|>\n"
+
 
 def _ids(tok, text: str) -> list[int]:
     return tok.encode(text)
+
+
+def _turn_head(role: str) -> str:
+    """一轮消息的角色前缀行；render 与训练共用，避免格式漂移。"""
+    return f"<|im_start|>{role}\n"
+
+
+def _turn_text(role: str, content: str) -> str:
+    """完整渲染一轮消息；render_messages 与 build_sft_example 共用同一格式。"""
+    return _turn_head(role) + content + _TURN_END
 
 
 def im_start_id(tok) -> int:
@@ -25,18 +37,24 @@ def im_end_id(tok) -> int:
 
 
 def render_messages(tok, messages: list[dict], add_generation_prompt: bool = False) -> str:
-    """把消息列表渲染成 Qwen 对话格式字符串。"""
-    out = [f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"]
+    """把消息列表渲染成 Qwen 对话格式字符串。
+
+    固定的 SYSTEM_PROMPT 是训练与推理唯一的 system 前缀；messages 里若出现
+    system 角色会被跳过，避免产生第二个（且与训练不一致的）system 轮。
+    """
+    out = [_turn_text("system", SYSTEM_PROMPT)]
     for m in messages:
-        out.append(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n")
+        if m["role"] == "system":
+            continue
+        out.append(_turn_text(m["role"], m["content"]))
     if add_generation_prompt:
-        out.append("<|im_start|>assistant\n")
+        out.append(_turn_head("assistant"))
     return "".join(out)
 
 
 def _segment(tok, role: str, content: str):
     """返回 (ids, labels)：仅 assistant 段的 content 与其后 <|im_end|> 计入损失。"""
-    head = _ids(tok, f"<|im_start|>{role}\n")
+    head = _ids(tok, _turn_head(role))
     body = _ids(tok, content)
     end = [im_end_id(tok)]
     nl = _ids(tok, "\n")
@@ -48,23 +66,39 @@ def _segment(tok, role: str, content: str):
     return ids, labels
 
 
-def build_sft_example(tok, messages: list[dict], max_len: int = 2048):
-    """构造 SFT 的 (input_ids, labels)；超长则从最早的消息开始丢弃，保留最近若干轮。
+def _system_segment(tok):
+    """固定 system 前缀的 (ids, labels)（全部 -100），训练与推理共用。"""
+    ids = _ids(tok, _turn_text("system", SYSTEM_PROMPT))
+    return ids, [-100] * len(ids)
 
-    教学注释：与 render_messages 一样自动补 system 段，保证训练与推理的序列前缀一致。
+
+def build_sft_example(tok, messages: list[dict], max_len: int = 2048):
+    """构造 SFT 的 (input_ids, labels)；超长时始终保留 system 前缀，从最早的轮次丢弃。
+
+    教学注释：system 前缀与 render_messages 完全一致，保证训练/推理分布一致；
+    若单条消息仍超长，则保留其尾部，确保结尾的助手内容及其 <|im_end|> 被监督。
     """
-    msgs = list(messages)
-    if not msgs or msgs[0]["role"] != "system":
-        msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + msgs
-    segs = [_segment(tok, m["role"], m["content"]) for m in msgs]
-    out_ids: list[int] = []
-    out_labels: list[int] = []
+    sys_ids, sys_labels = _system_segment(tok)
+    segs = [_segment(tok, m["role"], m["content"])
+            for m in messages if m["role"] != "system"]
+    keep = max_len - len(sys_ids)
+    body_ids: list[int] = []
+    body_labels: list[int] = []
     for ids, labels in reversed(segs):
-        if out_ids and len(ids) + len(out_ids) > max_len:
+        if body_ids and len(ids) + len(body_ids) > keep:
             break
-        out_ids = ids + out_ids
-        out_labels = labels + out_labels
-    if len(out_ids) > max_len:                      # 单条消息就超长：保守截断
+        body_ids = ids + body_ids
+        body_labels = labels + body_labels
+    if len(body_ids) > keep:                        # 单条消息就超长：保留尾部
+        if keep > 0:
+            body_ids = body_ids[-keep:]
+            body_labels = body_labels[-keep:]
+        else:
+            body_ids = []
+            body_labels = []
+    out_ids = sys_ids + body_ids
+    out_labels = sys_labels + body_labels
+    if len(out_ids) > max_len:                      # 前缀本身已超长：保守截断
         out_ids = out_ids[:max_len]
         out_labels = out_labels[:max_len]
     return out_ids, out_labels

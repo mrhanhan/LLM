@@ -59,3 +59,38 @@ def test_history_to_messages_both_formats():
                                           {"role": "assistant", "content": "嗨"}]
     dicts = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
     assert history_to_messages(dicts) == dicts
+
+
+def test_no_duplicate_or_custom_system():
+    msgs = [{"role": "system", "content": "自定义"},
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "嗨"}]
+    s = render_messages(TOK, msgs)
+    assert s.count("<|im_start|>system") == 1
+    assert SYSTEM_PROMPT in s and "自定义" not in s
+    sys_ids = TOK.encode(f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n")
+    ids, _ = build_sft_example(TOK, msgs)
+    assert ids[:len(sys_ids)] == sys_ids
+    assert "自定义" not in TOK.decode(ids)
+
+
+def test_truncation_keeps_system_prefix():
+    msgs = [{"role": "user", "content": "第一轮问题" * 30},
+            {"role": "assistant", "content": "第一轮回答" * 30},
+            {"role": "user", "content": "最后一问"},
+            {"role": "assistant", "content": "最后答案"}]
+    ids, labels = build_sft_example(TOK, msgs, max_len=64)
+    sys_ids = TOK.encode(f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n")
+    assert len(ids) <= 64 and len(ids) == len(labels)
+    assert ids[:len(sys_ids)] == sys_ids
+    assert has_supervision(labels)
+
+
+def test_overlong_single_assistant_keeps_im_end():
+    msgs = [{"role": "user", "content": "问"},
+            {"role": "assistant", "content": "答" * 500}]
+    ids, labels = build_sft_example(TOK, msgs, max_len=64)
+    assert len(ids) <= 64 and len(ids) == len(labels)
+    sup_ids = [ids[i] for i, l in enumerate(labels) if l != -100]
+    assert im_end_id(TOK) in sup_ids
+    assert TOK.encode("答")[0] in sup_ids
