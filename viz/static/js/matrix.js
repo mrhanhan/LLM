@@ -5,7 +5,6 @@ import { divergingRGB } from './colors.js';
 const loader = new THREE.TextureLoader();
 
 const HEIGHT = 0.9;
-const MIN_EXTENT = 0.04;
 
 export function buildPlane(spec, source = 'live', tiles = 64, height = HEIGHT) {
   const geo = new THREE.PlaneGeometry(height, height);
@@ -22,15 +21,18 @@ export function buildPlane(spec, source = 'live', tiles = 64, height = HEIGHT) {
 
 export async function buildCubes(spec, source = 'live', height = HEIGHT) {
   const { values } = await getGrid(spec.name, source, 256);
+  const [o, i] = spec.shape;
   const rows = values.length;
   const cols = values[0] ? values[0].length : 0;
   let absmax = 1e-6;
   for (const row of values) {
     for (const v of row) absmax = Math.max(absmax, Math.abs(v));
   }
-  const cell = height / Math.max(rows, cols, 1);
-  const size = Math.max(cell, MIN_EXTENT);
-  const geo = new THREE.BoxGeometry(size, size, size);
+  const cell = height / Math.max(o, i, 1);
+  const boxX = i === 1 ? Math.max(cell * 0.92, 0.05) : cell * 0.92;
+  const boxY = o === 1 ? Math.max(cell * 0.92, 0.05) : cell * 0.92;
+  const boxZ = cell * 0.92;
+  const geo = new THREE.BoxGeometry(boxX, boxY, boxZ);
   const mat = new THREE.MeshBasicMaterial();
   const mesh = new THREE.InstancedMesh(geo, mat, Math.max(rows * cols, 1));
   const m = new THREE.Matrix4();
