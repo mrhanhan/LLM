@@ -45,15 +45,17 @@ def _apply_repetition_penalty(logits, prev_ids, penalty):
 def generate(model, tokenizer, prompt: str, max_new_tokens: int = 128,
              temperature: float = 0.8, top_k=None, top_p: float | None = 0.9,
              repetition_penalty: float = 1.0, device: str = "cuda",
-             generator=None, stop_ids: list[int] | None = None) -> str:
+             generator=None, stop_ids: list[int] | None = None,
+             add_bos: bool = True) -> str:
     """给定提示词，自回归生成文本。使用 KV 缓存避免重复计算。
 
     教学注释：stop_ids 支持"遇到任一指定 token 就停"，聊天场景用 <|im_end|> 停止，
-    基座续写沿用 eos。stop token 本身不进入输出。
+    基座续写沿用 eos。stop token 本身不进入输出。add_bos=False 供对话模板使用：
+    Qwen 的 bos 会映射成 <|endoftext|>，训练样本并不以它开头，须避免分布漂移。
     """
     model.eval()
     model.to(device)
-    ids = tokenizer.encode(prompt, add_bos=True)
+    ids = tokenizer.encode(prompt, add_bos=add_bos)
     idx = torch.tensor([ids], dtype=torch.long, device=device)
     stop = set(stop_ids) if stop_ids is not None else {tokenizer.special_id("eos")}
     generated = []

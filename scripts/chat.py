@@ -14,11 +14,13 @@ from src.model import GPT
 from src.tokenizer import QwenTokenizer
 
 
-def load_model(cfg_path, ckpt, tok):
-    cfg = load_config(cfg_path)
+def load_model(cfg, ckpt, tok):
     cfg.model.vocab_size = tok.vocab_size
     model = GPT(cfg.model)
-    model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=False)["model"])
+    if Path(ckpt).exists():
+        model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=False)["model"])
+    else:
+        print(f"[warn] 未找到 checkpoint：{ckpt}（将使用随机权重）")
     return model
 
 
@@ -34,8 +36,10 @@ def main():
 
     if args.ckpt is None:
         args.ckpt = "out/sft/latest.pt" if args.mode == "chat" else "out/gpt/latest.pt"
-    tok = QwenTokenizer.load("data/tokenizer/qwen2.5-0.5b")
-    model = load_model(args.config, args.ckpt, tok)
+    cfg = load_config(args.config)
+    tok = QwenTokenizer.load(cfg.data.tokenizer_dir)
+    model = load_model(cfg, args.ckpt, tok)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if args.mode == "base":
         print("模型已加载（续写模式）。输入 /quit 退出。")
@@ -44,13 +48,13 @@ def main():
             if prompt in ("/quit", "/exit", ""):
                 break
             print("AI> " + generate(model, tok, prompt, max_new_tokens=args.max_new_tokens,
-                                   temperature=args.temperature, top_p=args.top_p))
+                                   temperature=args.temperature, top_p=args.top_p,
+                                   device=device))
         return
 
     from src.chat_format import (render_messages, stop_ids, strip_special_text)
     print("模型已加载（对话模式）。输入 /reset 清空历史，/quit 退出。")
     messages = []
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     while True:
         user = input("你> ").strip()
         if user in ("/quit", "/exit", ""):
@@ -63,7 +67,7 @@ def main():
         prompt = render_messages(tok, messages, add_generation_prompt=True)
         reply = generate(model, tok, prompt, max_new_tokens=args.max_new_tokens,
                          temperature=args.temperature, top_p=args.top_p,
-                         device=device, stop_ids=stop_ids(tok))
+                         device=device, stop_ids=stop_ids(tok), add_bos=False)
         reply = strip_special_text(tok, reply)
         messages.append({"role": "assistant", "content": reply})
         print("AI> " + reply)
