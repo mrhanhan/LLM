@@ -109,9 +109,39 @@ def test_tokenize_skips_examples_without_supervision():
 
 
 def test_collate_pads_and_masks():
-    tok = _tok()
     batch = [([1, 2, 3, 4], [-100, -100, 5, 6]), ([1, 2], [-100, 7])]
     out = collate_sft(batch, pad_id=0)
     assert out["input_ids"].shape == (2, 4)
     assert out["labels"].tolist()[1][2:] == [-100, -100]
     assert isinstance(out["input_ids"], torch.Tensor)
+
+
+def test_offsets_reconstruct_multiple_examples(tmp_path):
+    tok = _tok()
+    examples = [
+        {"messages": [{"role": "user", "content": "问"},
+                      {"role": "assistant", "content": "答"}]},
+        {"messages": [{"role": "user", "content": "你好"},
+                      {"role": "assistant", "content": "答复"}]},
+        {"messages": [{"role": "user", "content": "问好"},
+                      {"role": "assistant", "content": "答好"}]},
+    ]
+    p = tmp_path / "m.npz"
+    n = save_sft_npz(tok, examples, str(p), max_len=64)
+    assert n == 3
+    ds = SFTDataset(str(p))
+    assert len(ds) == 3
+    for i in range(3):
+        s, e = int(ds.offsets[i]), int(ds.offsets[i + 1])
+        ids, labels = ds[i]
+        assert ids.tolist() == ds.ids[s:e].astype("int64").tolist()
+        assert labels.tolist() == ds.labels[s:e].astype("int64").tolist()
+
+
+def test_collate_respects_max_len_cap():
+    batch = [([1, 2, 3, 4, 5], [-100, -100, 5, 6, 7]), ([1, 2], [-100, 7])]
+    out = collate_sft(batch, pad_id=0, max_len=3)
+    assert out["input_ids"].shape == (2, 3)
+    assert out["input_ids"].tolist()[0] == [1, 2, 3]
+    assert out["labels"].tolist()[0] == [-100, -100, 5]
+    assert out["labels"].tolist()[1][2:] == [-100]

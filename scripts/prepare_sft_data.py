@@ -1,6 +1,5 @@
 """准备 SFT 数据：下载 alpaca-zh + firefly 子集，归一化/合成多轮，编码成 npz。"""
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -14,7 +13,7 @@ from src.sft_data import iter_sft_examples, save_sft_npz
 from src.tokenizer import QwenTokenizer
 
 
-def download_sft(dest_dir: str, firefly_items: int, proxy: str | None):
+def download_sft(dest_dir: str, firefly_items: int):
     """下载 alpaca-zh（整文件）与 firefly 前 N 条（流式，不整下 1.17GB）。"""
     from huggingface_hub import HfFileSystem
 
@@ -49,9 +48,9 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    setup_hf(args.endpoint, args.proxy or cfg.data.proxy)
+    setup_hf(args.endpoint or cfg.data.hf_endpoint, args.proxy or cfg.data.proxy)
     tok = QwenTokenizer.load(cfg.data.tokenizer_dir)
-    paths = download_sft("data/raw/sft", args.firefly_items, args.proxy or cfg.data.proxy)
+    paths = download_sft("data/raw/sft", args.firefly_items)
 
     # 先全部读成列表，切分 train/val（固定顺序，保证可复现）
     examples = list(iter_sft_examples(paths, synth_prob=0.5, seed=0))
