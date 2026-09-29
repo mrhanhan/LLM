@@ -7,14 +7,12 @@
 from __future__ import annotations
 
 import math
-import threading
-import time
 from typing import Callable
 
 import torch
 import torch.nn.functional as F
 
-from src.config import ModelConfig, TrainConfig
+from src.config import ModelConfig
 from src.model import GPT
 from src.attention import apply_rope
 
@@ -53,71 +51,6 @@ def build_tiny(vocab_size: int, device: str) -> GPT:
         d_ff=128, ctx_len=64, dropout=0.0, rope_theta=10000.0, tie_embeddings=True,
     )
     return GPT(cfg).to(device)
-
-
-class LiveTrainer:
-    """后台线程训练小模型，每个 log_interval 通过 on_step 回调推送状态。"""
-
-    def __init__(self, tokenizer: CharTokenizer, device: str,
-                 on_step: Callable[[int, float, float], None],
-                 lr: float = 3e-3, batch_size: int = 16, block_size: int = 48,
-                 model: GPT | None = None, data: torch.Tensor | None = None,
-                 weight_decay: float = 0.01, grad_clip: float = 1.0):
-        self.tok = tokenizer
-        self.device = device
-        self.on_step = on_step
-        self.lr = lr
-        self.batch = batch_size
-        self.block = block_size
-        self.weight_decay = weight_decay
-        self.grad_clip = grad_clip
-        self.model: GPT | None = model
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self.step = 0
-        self.loss = float("nan")
-        if data is None:
-            data = torch.tensor(tokenizer.encode(CORPUS), dtype=torch.long)
-        self.data = data.to(device)
-        self.optim: torch.optim.Optimizer | None = None
-
-    def _ensure_model(self) -> None:
-        if self.model is None:
-            self.model = build_tiny(self.tok.vocab_size, self.device)
-        if self.optim is None:
-            tcfg = TrainConfig(lr=self.lr, weight_decay=self.weight_decay,
-                               grad_clip=self.grad_clip)
-            self.optim = self.model.configure_optimizers(tcfg)
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._ensure_model()
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-
-    def _loop(self) -> None:
-        assert self.model is not None and self.optim is not None
-        self.model.train()
-        n = self.data.numel()
-        while not self._stop.is_set():
-            ix = torch.randint(0, max(n - self.block - 1, 1), (self.batch,), device=self.device)
-            x = torch.stack([self.data[i:i + self.block] for i in ix])
-            y = torch.stack([self.data[i + 1:i + 1 + self.block] for i in ix])
-            _, loss, _ = self.model(x, targets=y)
-            self.optim.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-            self.optim.step()
-            self.step += 1
-            self.loss = float(loss.detach())
-            if self.step % 5 == 0:
-                self.on_step(self.step, self.loss, self.lr)
-            time.sleep(0.001)
 
 
 # ----------------------------------------------------------------------------

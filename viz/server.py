@@ -33,12 +33,14 @@ from fastapi.staticfiles import StaticFiles
 from viz import arch as arch_mod
 from viz.graph import build_graph
 from viz.neurons import neuron_cloud
-from viz.runtime import CharTokenizer, LiveTrainer, build_tiny, stream_generate
+from viz.runtime import build_tiny, stream_generate
+from viz.datasets import (list_datasets, resolve_spec, load_pretrain,
+                          PretrainBatches, SFTBatches)
+from viz.train_engine import SimpleEngine, HifiTrainer, HifiSFTTrainer
 from viz.stats import ActivationRecorder, WeightTracker, snapshot_matrices
 from viz.weights import MatrixStore, load_checkpoint
 
 from src.config import load_config
-from src.data import load_bin
 from src.model import GPT
 from src.tokenizer import QwenTokenizer
 
@@ -98,13 +100,25 @@ class CkptUnavailable(RuntimeError):
     pass
 
 
-def build_live(*, lr: float = 3e-3, batch: int = 16, block: int = 48):
-    """返回 (model, tokenizer, graph, 训练超参)。"""
+_QWEN = None
+
+
+def _qwen_tokenizer():
+    global _QWEN
+    if _QWEN is None:
+        _QWEN = QwenTokenizer.load("data/tokenizer/qwen2.5-0.5b",
+                                   add_image_token=False)
+    return _QWEN
+
+
+def build_live():
+    """tiny 结构 + Qwen 词表；数据集只影响训练数据，不影响模型结构。"""
+    from viz.datasets import DATASETS
     from viz.runtime import CORPUS
-    tok = CharTokenizer(CORPUS)
+    tok = _qwen_tokenizer()
     model = build_tiny(tok.vocab_size, "cpu")
     graph = build_graph(model, source="live")
-    return model, tok, graph, (lr, batch, block)
+    return model, tok, graph, (DATASETS["corpus_qwen"],)
 
 
 class State:
@@ -120,14 +134,15 @@ class State:
         self._ckpt = None   # (model, tok, graph)
         self._scratch = None  # (model, tok, graph)
         self._stores: dict[str, MatrixStore] = {}
-        self.trainer: LiveTrainer | None = None
+        self.trainer = None
+        self.train_engine = None
+        self._train_meta: dict = {}
         self._train_ctx = None  # (model, graph)
         self.train_target = "live"
 
     def ensure_live(self):
         if self._live is None:
-            model, tok, graph, _ = build_live(
-                lr=self.args.lr, batch=self.args.batch, block=self.args.block)
+            model, tok, graph, _ = build_live()
             model = model.to(self.device)
             self._live = (model, tok, graph)
             self.recorder.attach(model)
@@ -173,48 +188,97 @@ class State:
         g["global_absmax"] = self.store(which).global_stats()["absmax"]
         return g
 
-    def _train_data(self, cfg):
-        arr = torch.from_numpy(load_bin(cfg.data.train_bin).astype("int64"))
-        return arr
-
-    def start_train(self, target: str = "live") -> None:
+    def start_train(self, target="live", mode="pretrain", dataset="corpus_qwen",
+                    engine="simple", params=None):
+        params = params or {}
         if target not in ("live", "ckpt", "scratch"):
             target = "live"
         if target == "ckpt" and not self.has_ckpt:
-            raise CkptUnavailable(
-                "服务端未加载 checkpoint，请用 --ckpt <path> 启动后重试。")
+            raise CkptUnavailable("服务端未加载 checkpoint，请用 --ckpt <path> 启动后重试。")
+        spec = resolve_spec(dataset, mode)
+        if engine not in ("simple", "hifi"):
+            engine = "simple"
         if self.trainer:
             self.trainer.stop()
-        self.train_target = target
         model, tok, graph = self.source(target)
-        lr = self.args.lr
-        wd, gc = 0.01, 1.0
-        data = None
-        if target in ("ckpt", "scratch"):
-            cfg = load_config(self.args.config)
-            lr = cfg.train.lr
-            wd = cfg.train.weight_decay
-            gc = cfg.train.grad_clip
-            data = self._train_data(cfg)
+
+        max_steps = max(1, int(params.get("max_steps", 200)))
+        lr = float(params.get("lr", getattr(self.args, "lr", 3e-4)))
+        batch_size = max(1, int(params.get("batch_size", 8)))
+        grad_accum = max(1, int(params.get("grad_accum", 1)))
+        block = int(self.args.block)
+
+        if mode == "pretrain":
+            data = load_pretrain(spec, tok)
+            make_batches = lambda: PretrainBatches(data, batch_size, block, self.device)
+            hifi_data = data
+        else:
+            path = spec["path"]
+            pad_id = tok.special_id("pad")
+            make_batches = lambda: SFTBatches(path, batch_size, self.args.sft_max_len,
+                                              pad_id, self.device)
+            hifi_data = path
+
         self.tracker.capture(model)
         self._train_ctx = (model, graph)
+        self._train_meta = {"target": target, "mode": mode, "dataset": dataset,
+                            "engine": engine, "total_steps": max_steps}
         model.train()
-        self.trainer = LiveTrainer(
-            tok, self.device, on_step=self._on_step, lr=lr,
-            batch_size=self.args.batch, block_size=self.args.block,
-            model=model, data=data, weight_decay=wd, grad_clip=gc)
+        if engine == "hifi":
+            from src.config import TrainConfig
+            cfg = TrainConfig(batch_size=batch_size, grad_accum=grad_accum, lr=lr,
+                              min_lr=lr * 0.1, warmup_steps=max(1, max_steps // 20),
+                              max_steps=max_steps, weight_decay=0.05, grad_clip=1.0,
+                              dtype="bf16", out_dir="out/viz", log_interval=5)
+            if mode == "sft":
+                from src.sft_data import SFTDataset
+                ds = SFTDataset(hifi_data)
+                self.trainer = HifiSFTTrainer(model, cfg, ds, tok,
+                                              max_len=self.args.sft_max_len,
+                                              device=self.device, on_step=self._on_step)
+            else:
+                self.trainer = HifiTrainer(model, cfg, hifi_data, tokenizer=tok,
+                                           device=self.device, ctx_len=block,
+                                           on_step=self._on_step)
+        else:
+            batches = make_batches()
+            self.trainer = SimpleEngine(model, batches.next, self.device, self._on_step,
+                                        lr=lr, max_steps=max_steps, grad_accum=grad_accum,
+                                        weight_decay=0.05, warmup_steps=0)
+        self.train_target = target
+        self.train_engine = engine
         self.trainer.start()
 
-    def stop_train(self) -> None:
-        if self.trainer:
-            self.trainer.stop()
+    def stop_train(self):
+        if not self.trainer:
+            return None
+        self.trainer.stop()
+        path = self._save_path()
+        try:
+            self.trainer.save(path)
+        except Exception as e:  # noqa: BLE001
+            print(f"[viz] 保存失败：{e}")
+            path = None
+        self.trainer = None
+        return path
+
+    def _save_path(self):
+        import datetime
+        meta = self._train_meta
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = ROOT / "out" / "viz"
+        out.mkdir(parents=True, exist_ok=True)
+        return str(out / f"{meta.get('target','live')}-{meta.get('mode','pretrain')}"
+                          f"-{meta.get('dataset','corpus_qwen')}-{ts}.pt")
 
     def _on_step(self, step, loss, lr):
         model, graph = self._train_ctx
         vals = snapshot_matrices(model, graph["matrices"], tracker=self.tracker)
-        self.hub.publish({"type": "tick", "step": step,
-                          "loss": loss if math.isfinite(loss) else 0.0,
-                          "lr": lr, "target": self.train_target, "values": vals})
+        msg = {"type": "tick", "step": step,
+               "loss": loss if math.isfinite(loss) else 0.0, "lr": lr,
+               "target": self.train_target, "values": vals}
+        msg.update(self._train_meta)
+        self.hub.publish(msg)
         self.tracker.capture(model)
 
     def infer(self, which, prompt, max_new_tokens=40, temperature=0.9, top_k=20,
@@ -261,11 +325,13 @@ async def index():
 
 @app.get("/api/model")
 async def api_model(source: str = "live"):
-    if source in ("ckpt", "scratch"):
-        graph = await asyncio.to_thread(state.graph, source)
-    else:
-        graph = state.graph(source)
+    graph = await asyncio.to_thread(state.graph, source)
     return JSONResponse(graph)
+
+
+@app.get("/api/datasets")
+async def api_datasets():
+    return JSONResponse(list_datasets())
 
 
 @app.get("/api/matrix/{name}/grid")
@@ -329,20 +395,25 @@ async def compare_page():
 
 @app.post("/api/train/start")
 async def api_train_start(payload: dict | None = None):
-    target = str((payload or {}).get("target", "live"))
-    if target not in ("live", "ckpt", "scratch"):
-        target = "live"
+    body = payload or {}
+    target = str(body.get("target", "live"))
+    mode = str(body.get("mode", "pretrain"))
+    dataset = str(body.get("dataset", "corpus_qwen"))
+    engine = str(body.get("engine", "simple"))
+    params = body.get("params") or {}
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, state.start_train, target)
-    state.hub.publish({"type": "status", "training": True, "target": target})
-    return {"ok": True, "target": target}
+    await loop.run_in_executor(
+        None, lambda: state.start_train(target, mode, dataset, engine, params))
+    return {"ok": True, "target": target, "mode": mode, "dataset": dataset,
+            "engine": engine, "total_steps": int(params.get("max_steps", 200))}
 
 
 @app.post("/api/train/stop")
 async def api_train_stop():
-    state.stop_train()
-    state.hub.publish({"type": "status", "training": False})
-    return {"ok": True}
+    loop = asyncio.get_running_loop()
+    path = await loop.run_in_executor(None, state.stop_train)
+    state.hub.publish({"type": "status", "training": False, "saved": path})
+    return {"ok": True, "saved": path}
 
 
 @app.post("/api/infer")
@@ -387,8 +458,9 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 # 冒烟与入口
 # ----------------------------------------------------------------------------
 def smoke() -> dict:
-    model, tok, graph, _ = build_live()
+    model = build_tiny(256, "cpu")
     store = MatrixStore(model)
+    graph = build_graph(model, source="live")
     attn = next(m for m in graph["matrices"] if m["role"] == "attn")
     return {"source": "live", "n_matrices": len(graph["matrices"]),
             "n_connections": len(graph["connections"]),
@@ -406,6 +478,7 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--block", type=int, default=48)
+    ap.add_argument("--sft-max-len", type=int, default=256)
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
     state = State(args)

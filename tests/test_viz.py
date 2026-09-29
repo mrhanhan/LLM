@@ -115,3 +115,10 @@ def test_server_smoke_builds_live_graph():
     assert info["source"] == "live"
     assert info["n_matrices"] > 0 and info["n_connections"] > 0
     assert "blocks.0.attn.q_proj.weight" in info["sample_matrix"]
+
+
+def test_train_spec_validation():
+    from viz.datasets import resolve_spec
+    assert resolve_spec("poetry", "pretrain")["kind"] == "pretrain"
+    with pytest.raises(ValueError):
+        resolve_spec("poetry", "sft")
