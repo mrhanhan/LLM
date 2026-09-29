@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>mini-llm-lab · 3D 模型浏览器</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
+  <script src="/static/vendor/katex/katex.min.js" defer></script>
+  <script type="importmap">
+    {"imports":{"three":"/static/vendor/three.module.js","three/addons/":"/static/vendor/jsm/"}}
+  </script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <header id="topbar">
+    <div class="brand">mini-llm-lab<span>3D 模型浏览器</span></div>
+    <div class="viewswitch">
+      <button data-mode="ckpt" class="active">真实模型检视</button>
+      <button data-mode="live">实时训练</button>
+      <button data-mode="arch">架构浏览器</button>
+    </div>
+    <div class="spacer"></div>
+    <span class="badge" id="badge-model">–</span>
+    <span class="badge" id="badge-device">–</span>
+  </header>
+  <aside id="left"></aside>
+  <aside id="drawer" class="hidden"><div id="drawerBody"></div></aside>
+  <footer id="bottom">
+    <div id="player"><button id="btn-play">▶</button><button id="btn-step">⏭</button><span id="prompt"></span></div>
+    <canvas id="loss" width="240" height="48"></canvas>
+    <div id="hover"></div>
+  </footer>
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
