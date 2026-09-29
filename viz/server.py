@@ -93,6 +93,33 @@ def _offer(q: asyncio.Queue, msg: dict) -> None:
     q.put_nowait(msg)
 
 
+def clamp_sft_len(configured: int, model) -> int:
+    """把配置的 SFT 最大长度收窄到模型 ctx_len，避免 RoPE 越界。
+
+    build_tiny 固定 ctx_len=64，而 --sft-max-len 默认 256；若不收窄，
+    补长后的 batch 会让 apply_rope 的 cos[offset:offset+t] 取空而抛错。
+    """
+    ctx = getattr(getattr(model, "cfg", None), "ctx_len", None)
+    if ctx is None:
+        return int(configured)
+    return min(int(configured), int(ctx))
+
+
+def validate_train_spec(dataset: str, mode: str) -> dict:
+    """训练启动前的轻量校验。
+
+    未知 id 抛 KeyError、方式/类型不符抛 ValueError、文件缺失抛
+    FileNotFoundError、数据集为空抛 ValueError；由 API 层转成 400，
+    避免拖到训练线程里变成 500。
+    """
+    if not dataset:
+        raise ValueError("数据集不能为空")
+    spec = resolve_spec(dataset, mode)
+    if not spec.get("builtin") and not Path(spec["path"]).exists():
+        raise FileNotFoundError(f"数据集文件不存在：{spec['path']}")
+    return spec
+
+
 # ----------------------------------------------------------------------------
 # 数据源构建：实时小模型 / 真实 checkpoint
 # ----------------------------------------------------------------------------
@@ -139,6 +166,8 @@ class State:
         self._train_meta: dict = {}
         self._train_ctx = None  # (model, graph)
         self.train_target = "live"
+        self._train_finished = False
+        self._last_saved: str | None = None
 
     def ensure_live(self):
         if self._live is None:
@@ -195,11 +224,18 @@ class State:
             target = "live"
         if target == "ckpt" and not self.has_ckpt:
             raise CkptUnavailable("服务端未加载 checkpoint，请用 --ckpt <path> 启动后重试。")
-        spec = resolve_spec(dataset, mode)
+        spec = validate_train_spec(dataset, mode)
         if engine not in ("simple", "hifi"):
             engine = "simple"
         if self.trainer:
             self.trainer.stop()
+        # 教学注释：在加载新数据/构造新引擎之前就清空旧 trainer 与上下文，
+        # 否则中途失败会留下上一轮已停止的 trainer，之后 stop 会把它按新
+        # 文件名保存，写错的内容。
+        self.trainer = None
+        self._train_ctx = None
+        self._train_meta = {}
+        self._train_finished = False
         model, tok, graph = self.source(target)
 
         max_steps = max(1, int(params.get("max_steps", 200)))
@@ -207,6 +243,7 @@ class State:
         batch_size = max(1, int(params.get("batch_size", 8)))
         grad_accum = max(1, int(params.get("grad_accum", 1)))
         block = int(self.args.block)
+        sft_len = clamp_sft_len(self.args.sft_max_len, model)
 
         if mode == "pretrain":
             data = load_pretrain(spec, tok)
@@ -215,7 +252,7 @@ class State:
         else:
             path = spec["path"]
             pad_id = tok.special_id("pad")
-            make_batches = lambda: SFTBatches(path, batch_size, self.args.sft_max_len,
+            make_batches = lambda: SFTBatches(path, batch_size, sft_len,
                                               pad_id, self.device)
             hifi_data = path
 
@@ -234,33 +271,59 @@ class State:
                 from src.sft_data import SFTDataset
                 ds = SFTDataset(hifi_data)
                 self.trainer = HifiSFTTrainer(model, cfg, ds, tok,
-                                              max_len=self.args.sft_max_len,
-                                              device=self.device, on_step=self._on_step)
+                                              max_len=sft_len,
+                                              device=self.device, on_step=self._on_step,
+                                              on_done=self._on_done)
             else:
                 self.trainer = HifiTrainer(model, cfg, hifi_data, tokenizer=tok,
                                            device=self.device, ctx_len=block,
-                                           on_step=self._on_step)
+                                           on_step=self._on_step, on_done=self._on_done)
         else:
             batches = make_batches()
             self.trainer = SimpleEngine(model, batches.next, self.device, self._on_step,
                                         lr=lr, max_steps=max_steps, grad_accum=grad_accum,
-                                        weight_decay=0.05, warmup_steps=0)
+                                        weight_decay=0.05, warmup_steps=0,
+                                        on_done=self._on_done)
         self.train_target = target
         self.train_engine = engine
         self.trainer.start()
 
-    def stop_train(self):
-        if not self.trainer:
-            return None
-        self.trainer.stop()
+    def _finish(self, trainer):
+        """保存本次 trainer 并广播一次 training:false，保证只发生一次。"""
         path = self._save_path()
         try:
-            self.trainer.save(path)
+            trainer.save(path)
         except Exception as e:  # noqa: BLE001
             print(f"[viz] 保存失败：{e}")
             path = None
-        self.trainer = None
+        if self.trainer is trainer:
+            self.trainer = None
+        self._train_finished = True
+        self._last_saved = path
+        self.hub.publish({"type": "status", "training": False, "saved": path})
         return path
+
+    def _on_done(self):
+        """训练线程自然跑完时的回调：保存并通知前端。"""
+        trainer = self.trainer
+        if trainer is None:
+            return
+        self._finish(trainer)
+
+    def stop_train(self):
+        trainer = self.trainer
+        if not trainer:
+            # 没有在跑的训练：仅在从未结束时补一条停止状态，避免与自然
+            # 结束的 on_done 重复广播。
+            if not self._train_finished:
+                self.hub.publish({"type": "status", "training": False, "saved": None})
+            return self._last_saved
+        trainer.stop()
+        # stop() 会 join 训练线程；若它其实已自然结束并由 on_done 保存/清空，
+        # 则直接返回，不再二次保存或广播。
+        if self.trainer is not trainer:
+            return self._last_saved
+        return self._finish(trainer)
 
     def _save_path(self):
         import datetime
@@ -401,18 +464,27 @@ async def api_train_start(payload: dict | None = None):
     dataset = str(body.get("dataset", "corpus_qwen"))
     engine = str(body.get("engine", "simple"))
     params = body.get("params") or {}
+    try:
+        validate_train_spec(dataset, mode)
+    except KeyError:
+        return JSONResponse({"error": f"未知数据集：{dataset}"}, status_code=400)
+    except (ValueError, FileNotFoundError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None, lambda: state.start_train(target, mode, dataset, engine, params))
+    total_steps = int(params.get("max_steps", 200))
+    state.hub.publish({"type": "status", "training": True, "target": target,
+                       "mode": mode, "dataset": dataset, "engine": engine,
+                       "total_steps": total_steps})
     return {"ok": True, "target": target, "mode": mode, "dataset": dataset,
-            "engine": engine, "total_steps": int(params.get("max_steps", 200))}
+            "engine": engine, "total_steps": total_steps}
 
 
 @app.post("/api/train/stop")
 async def api_train_stop():
     loop = asyncio.get_running_loop()
     path = await loop.run_in_executor(None, state.stop_train)
-    state.hub.publish({"type": "status", "training": False, "saved": path})
     return {"ok": True, "saved": path}
 
 

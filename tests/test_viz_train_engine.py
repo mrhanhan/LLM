@@ -86,3 +86,38 @@ def test_hifi_sft_runs_and_interrupts(tmp_path):
     tr2._stop.set()
     tr2.viz_run()
     assert tr2._current_step == tr2.start_step  # 已中断，未前进
+
+
+def test_simple_engine_on_done_fires_once_on_completion():
+    import time
+    model = _model()
+    done = []
+
+    def batch_fn():
+        x = torch.randint(0, 64, (2, 8))
+        return x, x.clone()
+
+    eng = SimpleEngine(model, batch_fn, "cpu", lambda *a: None, lr=1e-3,
+                       max_steps=3, grad_accum=1, log_interval=1,
+                       on_done=lambda: done.append(1))
+    eng.start()
+    deadline = time.time() + 10
+    while time.time() < deadline and not done:
+        time.sleep(0.01)
+    eng.stop()  # 自然跑完后再 stop，也不应再次触发 on_done
+    assert done == [1]
+    assert eng.step == 3
+
+
+def test_simple_engine_stop_suppresses_on_done():
+    import time
+    model = _model()
+    done = []
+    eng = SimpleEngine(model, lambda: (torch.zeros(2, 8, dtype=torch.long),) * 2,
+                       "cpu", lambda *a: None, max_steps=100000, log_interval=100000,
+                       on_done=lambda: done.append(1))
+    eng.start()
+    time.sleep(0.05)
+    eng.stop()
+    assert done == []
+    assert eng.step < 100000

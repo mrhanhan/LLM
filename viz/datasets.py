@@ -77,8 +77,11 @@ def load_pretrain(spec: dict, tok) -> np.ndarray:
     if spec.get("builtin"):
         from viz.runtime import CORPUS
         return np.asarray(tok.encode(CORPUS), dtype=np.int64)
+    # 教学注释：文件型数据集保持 np.memmap 原样返回，绝不 materialize 成
+    # int64 ndarray，否则「大文件」会立即复制一份进内存导致 OOM。
+    # PretrainBatches.next 已按小批次 .astype("int64")，按需转换即可。
     from src.data import load_bin
-    return np.asarray(load_bin(spec["path"]), dtype=np.int64)
+    return load_bin(spec["path"])
 
 
 class PretrainBatches:

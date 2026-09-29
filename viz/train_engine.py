@@ -19,12 +19,13 @@ class SimpleEngine:
                  *, lr: float = 3e-4, max_steps: int = 200, grad_accum: int = 1,
                  grad_clip: float = 1.0, weight_decay: float = 0.05,
                  warmup_steps: int = 0, min_lr: float | None = None,
-                 log_interval: int = 5):
+                 log_interval: int = 5, on_done: Callable | None = None):
         self.model = model
         self.batch_fn = batch_fn
         self.device = device
         self.model.to(self.device)
         self.on_step = on_step
+        self.on_done = on_done
         self.cfg = TrainConfig(
             lr=lr, min_lr=min_lr if min_lr is not None else lr * 0.1,
             warmup_steps=warmup_steps, max_steps=max_steps, grad_accum=grad_accum,
@@ -72,6 +73,10 @@ class SimpleEngine:
                 self.on_step(self.step, self.loss, lr)
             time.sleep(0)
         self.model.eval()
+        # 教学注释：只有"自然跑完"才回调 on_done；被 stop() 打断时不回调，
+        # 由显式的 stop 路径负责保存与状态通知，避免双重保存/双份 status。
+        if not self._stop.is_set() and self.on_done:
+            self.on_done()
 
     def save(self, path: str) -> None:
         torch.save({"model": self.model.state_dict(), "step": self.step,
@@ -79,9 +84,16 @@ class SimpleEngine:
 
 
 class _VizLoop:
-    """给 src.Trainer/SFTTrainer 注入 on_step 回调与可中断循环。"""
+    """给 src.Trainer/SFTTrainer 注入 on_step 回调与可中断循环。
+
+    教学注释：这里有意重新实现一遍训练循环（而非直接复用 ``Trainer.train``），
+    为的是在不改动 ``src/`` 的前提下注入 ``on_step`` 回调与 ``_stop`` 中断；
+    代价是它省略了 ``eval_interval`` / ``save_interval`` 的语义——每次训练结束
+    由 viz 层统一保存，不做周期性验证与落盘。
+    """
 
     on_step: Callable
+    on_done: Callable
     _stop: threading.Event
 
     def viz_run(self) -> None:
@@ -107,6 +119,9 @@ class _VizLoop:
             self.on_step(self._current_step, total / cfg.grad_accum, lr)
             time.sleep(0)
         self.model.eval()
+        # 与 SimpleEngine 相同：仅自然结束时回调 on_done，被 stop() 打断不回调。
+        if not self._stop.is_set() and self.on_done:
+            self.on_done()
 
     def _launch(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -123,8 +138,9 @@ class _VizLoop:
 
 class HifiTrainer(_VizLoop, Trainer):
     def __init__(self, model, train_cfg, train_data, *, tokenizer=None,
-                 device=None, ctx_len=None, on_step=None):
+                 device=None, ctx_len=None, on_step=None, on_done=None):
         self.on_step = on_step or (lambda *a: None)
+        self.on_done = on_done
         self._stop = threading.Event()
         self._thread = None
         super().__init__(model, train_cfg, train_data, None,
@@ -139,8 +155,9 @@ class HifiTrainer(_VizLoop, Trainer):
 
 class HifiSFTTrainer(_VizLoop, SFTTrainer):
     def __init__(self, model, train_cfg, train_ds, tokenizer, *, max_len=256,
-                 val_ds=None, device=None, on_step=None):
+                 val_ds=None, device=None, on_step=None, on_done=None):
         self.on_step = on_step or (lambda *a: None)
+        self.on_done = on_done
         self._stop = threading.Event()
         self._thread = None
         super().__init__(model, train_cfg, train_ds, tokenizer,

@@ -48,6 +48,19 @@ def test_pretrain_batches_shapes():
     assert torch.equal(y[:, :-1], x[:, 1:])
 
 
+def test_load_pretrain_file_backed_keeps_memmap(tmp_path):
+    p = tmp_path / "toy.bin"
+    np.arange(64, dtype=np.uint32).tofile(p)
+    spec = {"id": "toy", "kind": "pretrain", "tokenizer": "qwen", "path": str(p)}
+    arr = load_pretrain(spec, _FakeTok())
+    assert isinstance(arr, np.memmap) and arr.dtype == np.uint32
+
+    b = PretrainBatches(arr, batch_size=2, block=8, device="cpu")
+    x, y = b.next()
+    assert x.dtype == torch.long and y.dtype == torch.long
+    assert x.shape == (2, 8)
+
+
 def test_sft_batches_masks_padding(tmp_path):
     npz = tmp_path / "toy.npz"
     np.savez(npz,

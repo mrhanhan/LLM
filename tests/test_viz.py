@@ -122,3 +122,37 @@ def test_train_spec_validation():
     assert resolve_spec("poetry", "pretrain")["kind"] == "pretrain"
     with pytest.raises(ValueError):
         resolve_spec("poetry", "sft")
+
+
+def test_clamp_sft_len_to_model_ctx():
+    class _M:
+        cfg = ModelConfig(vocab_size=8, d_model=8, n_layer=1, n_head=1,
+                          n_kv_head=1, d_ff=8, ctx_len=64)
+
+    assert server.clamp_sft_len(256, _M()) == 64   # tiny 模型 ctx 更小 -> 收窄
+    assert server.clamp_sft_len(32, _M()) == 32    # 配置更小 -> 保持配置
+
+    class _NoCfg:
+        pass
+
+    assert server.clamp_sft_len(256, _NoCfg()) == 256  # 无 cfg -> 不回退也不报错
+
+
+def test_validate_train_spec_accepts_builtin():
+    spec = server.validate_train_spec("corpus_qwen", "pretrain")
+    assert spec["builtin"] is True
+
+
+def test_validate_train_spec_rejects_bad_inputs(monkeypatch):
+    import viz.datasets as vds
+
+    with pytest.raises(ValueError):
+        server.validate_train_spec("poetry", "sft")          # mode/kind 不符
+    with pytest.raises(KeyError):
+        server.validate_train_spec("nope", "pretrain")       # 未知 id
+    with pytest.raises(ValueError):
+        server.validate_train_spec("", "pretrain")           # 空数据集
+    monkeypatch.setitem(vds.DATASETS["poetry"], "path",
+                        "data/processed/text/__missing__.bin")
+    with pytest.raises(FileNotFoundError):
+        server.validate_train_spec("poetry", "pretrain")     # 文件缺失
