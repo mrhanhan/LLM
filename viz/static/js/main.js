@@ -69,7 +69,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
     try {
       const cell = await getCell(name, i, j, SOURCE);
       if (seq !== hoverSeq) return;
-      hoverEl.textContent = `i=${i} j=${j} value=${cell.value}`;
+      hoverEl.textContent = `i=${i} j=${j} value=${Number(cell.value).toFixed(4)}`;
     } catch (err) {
       if (seq === hoverSeq) hoverEl.textContent = `i=${i} j=${j} value=?`;
     }
