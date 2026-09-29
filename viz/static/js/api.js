@@ -12,6 +12,8 @@ export const getPatch = (name, r, c, h, w, source = 'live') =>
   j(`/api/matrix/${encodeURIComponent(name)}/patch?${q({ source, r, c, h, w })}`);
 export const matrixPngUrl = (name, source = 'live', tiles = 64, norm = 'global') =>
   `/api/matrix/${encodeURIComponent(name)}/png?${q({ source, tiles, norm })}`;
+export const getNeurons = (matrix, source = 'live', n = 160, top = 2500) =>
+  j(`/api/neurons?${q({ matrix, source, n, top })}`);
 
 export function connectWS(onmsg) {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);

@@ -4,6 +4,7 @@ import { getModel, getCell } from './api.js';
 import { Shelf } from './shelf.js';
 import { cellFromIntersection } from './matrix.js';
 import { Panel } from './panel.js';
+import { showCloud, resizeCloud } from './cloud.js';
 
 const panel = new Panel(document.getElementById('drawer'));
 window.__panel = panel;
@@ -22,6 +23,58 @@ const key = new THREE.DirectionalLight(0xbcd2ff, 1.1); key.position.set(6, 10, 8
 
 export const modelGroup = new THREE.Group();
 scene.add(modelGroup);
+
+const cloudGroup = new THREE.Group();
+scene.add(cloudGroup);
+
+const CLOUD_BTN_STYLE =
+  'margin-top:10px;padding:5px 12px;border-radius:8px;cursor:pointer;' +
+  'font-size:12px;border:1px solid #22345a;background:#0e1730;color:#9fb2d8;';
+let cloudOn = false;
+let cloudMatrix = null;
+
+function refreshCloudBtn() {
+  const btn = document.getElementById('cloudBtn');
+  if (btn) btn.textContent = cloudOn ? '关闭点云' : '点云';
+}
+
+async function onCloudClick() {
+  const btn = document.getElementById('cloudBtn');
+  if (!cloudMatrix) return;
+  if (cloudOn) {
+    cloudOn = false;
+    cloudGroup.clear();
+    refreshCloudBtn();
+    return;
+  }
+  cloudOn = true;
+  if (btn) btn.textContent = '加载中…';
+  try {
+    await showCloud(cloudGroup, cloudMatrix, SOURCE);
+    refreshCloudBtn();
+  } catch (e) {
+    cloudOn = false;
+    refreshCloudBtn();
+    console.error('点云加载失败', e);
+  }
+}
+
+function mountCloudControl(spec) {
+  cloudMatrix = spec.name;
+  cloudOn = false;
+  cloudGroup.clear();
+  const body = panel.body;
+  let btn = document.getElementById('cloudBtn');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'cloudBtn';
+    btn.textContent = '点云';
+    btn.style.cssText = CLOUD_BTN_STYLE;
+    btn.onclick = onCloudClick;
+    body.append(btn);
+  }
+  refreshCloudBtn();
+}
 
 let shelf = null;
 const SOURCE = 'live';
@@ -97,6 +150,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   const ud = hits[0].object.userData || {};
   if (ud.kind === 'matrix') {
     window.__panel?.show?.(ud.spec, SOURCE);
+    mountCloudControl(ud.spec);
   } else if (ud.role === 'slab') {
     shelf.expand(ud.layerId).catch(console.error);
   }
@@ -105,6 +159,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  resizeCloud(innerWidth, innerHeight);
 }
 addEventListener('resize', resize); resize();
 
