@@ -1,0 +1,9 @@
+# For GLM-4.7-Flash
+transformers>=5.0.0
+pre-commit>=4.2.0
+accelerate>=1.10.1
+
+# not recommended to install sglang and vllm in the same environment
+
+# sglang>=0.5.8
+# vllm>=0.15.0

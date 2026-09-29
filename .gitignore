@@ -5,7 +5,7 @@ __pycache__/
 .idea/
 data/
 out/
-reference/
 .superpowers/
 *.png
 !docs/**/*.png
+!reference/**/*.png
