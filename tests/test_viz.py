@@ -11,6 +11,7 @@ from viz.neurons import neuron_cloud
 from viz.runtime import CharTokenizer, CORPUS
 from viz.stats import ActivationRecorder, WeightTracker, snapshot_matrices, summarize
 from viz.weights import MatrixStore, diverging_rgb, load_checkpoint
+import viz.server as server
 
 
 def tiny_model():
@@ -107,3 +108,10 @@ def test_load_checkpoint_optional():
         pytest.skip("无本地 checkpoint")
     model, cfg = load_checkpoint("out/gpt/latest.pt", "configs/gpt_tinystories.yaml")
     assert model.cfg.d_model == 768 and len(model.blocks) == 12
+
+
+def test_server_smoke_builds_live_graph():
+    info = server.smoke()
+    assert info["source"] == "live"
+    assert info["n_matrices"] > 0 and info["n_connections"] > 0
+    assert "blocks.0.attn.q_proj.weight" in info["sample_matrix"]
