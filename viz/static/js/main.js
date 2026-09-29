@@ -136,7 +136,7 @@ if (playerEl && !promptInput) {
   playerEl.insertBefore(promptInput, document.getElementById('btn-step'));
 }
 
-const attnCanvas = document.getElementById('attn') || document.getElementById('loss');
+const attnCanvas = document.getElementById('attn');
 
 function clearAttn() {
   if (!attnCanvas) return;

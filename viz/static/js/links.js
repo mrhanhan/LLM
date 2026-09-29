@@ -121,7 +121,8 @@ export class Links {
     for (const line of this.lines) {
       const wf = line.userData.connection && line.userData.connection.weight_from;
       const raw = wf != null ? values[wf] : undefined;
-      const n = raw ? raw.norm : undefined;
+      // tick 消息带 norm，token 消息带 act；优先 norm，回退 act
+      const n = raw ? (raw.norm ?? raw.act) : undefined;
       line.userData._norm = typeof n === 'number' && Number.isFinite(n) ? n : null;
       if (line.userData._norm != null) present.push(line.userData._norm);
     }
@@ -170,7 +171,6 @@ export class Flow {
     this.graph = graph || { layers: [] };
     this.shelf = shelf;
     this.ribbons = [];
-    this.size = new THREE.Vector2(innerWidth || 1, innerHeight || 1);
     this._build();
   }
 
@@ -270,9 +270,8 @@ export class Flow {
     }
   }
 
-  resize(w, h) {
-    this.size.set(w || 1, h || 1);
-  }
+  // 流带用世界坐标（MeshBasicMaterial 无分辨率概念），resize 无需处理
+  resize() {}
 
   dispose() {
     for (const rb of this.ribbons) {
