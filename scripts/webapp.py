@@ -52,13 +52,32 @@ def load_models(args):
     return tok, text_model, vlm
 
 
-def build_demo(tok, text_model, vlm):
+def load_chat_model(args, tok):
+    """加载 SFT 对话模型（存在才用）。"""
+    if not Path(args.sft_ckpt).exists():
+        return None
+    cfg = load_config(args.sft_config)
+    cfg.model.vocab_size = tok.vocab_size
+    m = GPT(cfg.model)
+    m.load_state_dict(torch.load(args.sft_ckpt, map_location="cpu", weights_only=False)["model"])
+    print(f"已加载对话模型：{args.sft_ckpt}")
+    return m
+
+
+def build_demo(tok, chat_model, vlm):
     """构建 Gradio 界面（与启动分离，便于 --check 冒烟测试）。"""
-    def chat_fn(prompt, max_tokens, temperature, top_p):
-        if not prompt or not prompt.strip():
-            return "请输入提示词"
-        return generate(text_model, tok, prompt, max_new_tokens=int(max_tokens),
-                        temperature=float(temperature), top_p=float(top_p), device=DEV)
+    def chat_reply(message, history, max_tokens, temperature, top_p):
+        from src.chat_format import (history_to_messages, render_messages,
+                                     stop_ids, strip_special_text)
+        if chat_model is None:
+            return "未找到对话模型，请先训练：python scripts/train_sft.py"
+        messages = history_to_messages(history)
+        messages.append({"role": "user", "content": message})
+        prompt = render_messages(tok, messages, add_generation_prompt=True)
+        out = generate(chat_model, tok, prompt, max_new_tokens=int(max_tokens),
+                       temperature=float(temperature), top_p=float(top_p), device=DEV,
+                       stop_ids=stop_ids(tok), add_bos=False)
+        return strip_special_text(tok, out)
 
     def caption_fn(image, question):
         if vlm is None:
@@ -75,14 +94,15 @@ def build_demo(tok, text_model, vlm):
 
     with gr.Blocks(title="mini-llm-lab") as demo:
         gr.Markdown("# mini-llm-lab（从零手写 LLM + VLM）")
-        with gr.Tab("文本聊天"):
-            prompt = gr.Textbox(label="提示词")
-            with gr.Row():
-                max_tokens = gr.Slider(16, 256, value=128, step=16, label="生成长度")
-                temperature = gr.Slider(0.0, 2.0, value=0.8, step=0.1, label="temperature")
-                top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="top_p")
-            out = gr.Textbox(label="生成结果")
-            gr.Button("生成").click(chat_fn, [prompt, max_tokens, temperature, top_p], out)
+        with gr.Tab("文本对话"):
+            gr.ChatInterface(
+                chat_reply,
+                additional_inputs=[
+                    gr.Slider(16, 512, value=256, step=16, label="生成长度"),
+                    gr.Slider(0.0, 2.0, value=0.7, step=0.1, label="temperature"),
+                    gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="top_p"),
+                ],
+            )
         with gr.Tab("图片描述 / VQA"):
             image = gr.Image(type="pil", label="上传图片")
             question = gr.Textbox(label="问题（留空 = 生成描述）", placeholder="例如：图中有几个图形？")
@@ -96,6 +116,8 @@ def main():
     ap.add_argument("--tokenizer_dir", default="data/tokenizer/qwen2.5-0.5b")
     ap.add_argument("--text_config", default="configs/gpt_tinystories.yaml")
     ap.add_argument("--text_ckpt", default="out/gpt/latest.pt")
+    ap.add_argument("--sft_config", default="configs/sft_zh.yaml")
+    ap.add_argument("--sft_ckpt", default="out/sft/latest.pt")
     ap.add_argument("--vlm_config", default="configs/vlm_children.yaml")
     ap.add_argument("--vlm_ckpt", default="out/vlm/latest.pt")
     ap.add_argument("--share", action="store_true")
@@ -103,7 +125,7 @@ def main():
     args = ap.parse_args()
 
     tok, text_model, vlm = load_models(args)
-    demo = build_demo(tok, text_model, vlm)
+    demo = build_demo(tok, load_chat_model(args, tok), vlm)
     if args.check:
         print(f"[check] 界面构建成功；VLM 可用：{vlm is not None}")
         return
