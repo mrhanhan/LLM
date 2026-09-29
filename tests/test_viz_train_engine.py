@@ -41,3 +41,48 @@ def test_simple_engine_stop_before_max_steps():
     import time; time.sleep(0.05)
     eng.stop()
     assert eng.step < 100000
+
+
+import numpy as np
+from src.config import TrainConfig
+from src.sft_data import SFTDataset
+from viz.train_engine import HifiTrainer, HifiSFTTrainer
+
+
+def test_hifi_pretrain_runs_steps():
+    model = _model()
+    data = np.arange(2000, dtype=np.int64) % 64
+    cfg = TrainConfig(batch_size=2, grad_accum=1, max_steps=3, lr=1e-3,
+                      warmup_steps=0, log_interval=1, weight_decay=0.0)
+    seen = []
+    tr = HifiTrainer(model, cfg, data, device="cpu", ctx_len=8,
+                     on_step=lambda s, l, lr: seen.append((s, l)))
+    tr.viz_run()
+    assert tr._current_step == 3 and seen and seen[-1][0] == 3
+    assert all(np.isfinite(l) for _, l in seen)
+
+
+def test_hifi_sft_runs_and_interrupts(tmp_path):
+    npz = tmp_path / "toy.npz"
+    np.savez(npz,
+             ids=np.array([5, 6, 7, 8, 9, 10], dtype=np.int32),
+             labels=np.array([-100, 6, 7, -100, 9, 10], dtype=np.int32),
+             offsets=np.array([0, 3, 6], dtype=np.int64))
+    model = _model(vocab=64, ctx=16)
+    cfg = TrainConfig(batch_size=2, grad_accum=1, max_steps=2, lr=1e-3,
+                      warmup_steps=0, log_interval=1, weight_decay=0.0)
+
+    class _Tok:
+        def special_id(self, name):
+            return 0
+
+    seen = []
+    tr = HifiSFTTrainer(model, cfg, SFTDataset(str(npz)), _Tok(), max_len=8,
+                        device="cpu", on_step=lambda s, l, lr: seen.append(s))
+    tr.viz_run()
+    assert tr._current_step == 2 and seen and seen[-1] == 2
+
+    tr2 = HifiSFTTrainer(model, cfg, SFTDataset(str(npz)), _Tok(), max_len=8, device="cpu")
+    tr2._stop.set()
+    tr2.viz_run()
+    assert tr2._current_step == tr2.start_step  # 已中断，未前进
