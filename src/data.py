@@ -392,6 +392,7 @@ def read_fineweb_cached(repo: str, lang: str, split: str, shard: str,
     教学注释：抽取出的文本落盘缓存，既省代理流量，也保证断点可复现。
     """
     import gzip
+    import os
     from pathlib import Path
 
     cp = Path(cache_path)
@@ -406,11 +407,15 @@ def read_fineweb_cached(repo: str, lang: str, split: str, shard: str,
     path_in_repo = f"data/{lang}/{split}/{shard}"
     pf, fobj = open_remote_parquet(repo, path_in_repo)
     cp.parent.mkdir(parents=True, exist_ok=True)
+    # 原子写缓存：先写 .tmp，全部写完再 os.replace 就位。这样中途崩溃只会留下
+    # 一个 .tmp，不会生成半截的 .gz 被后续运行当成完整缓存读取。
+    tmp = cp.with_name(cp.name + ".tmp")
     try:
-        with gzip.open(cp, "wt", encoding="utf-8") as out:
+        with gzip.open(tmp, "wt", encoding="utf-8") as out:
             for t in iter_parquet_text(pf, max_bytes=max_bytes):
                 t = t.replace("\n", " ")
                 out.write(t + "\n")
                 yield t
     finally:
         fobj.close()
+    os.replace(tmp, cp)

@@ -31,14 +31,6 @@ DEV = "cuda" if torch.cuda.is_available() else "cpu"
 def load_models(args):
     tok = QwenTokenizer.load(args.tokenizer_dir)
 
-    text_cfg = load_config(args.text_config)
-    text_cfg.model.vocab_size = tok.vocab_size
-    text_model = GPT(text_cfg.model)
-    if Path(args.text_ckpt).exists():
-        text_model.load_state_dict(torch.load(args.text_ckpt, map_location="cpu", weights_only=False)["model"])
-    else:
-        print(f"[warn] 未找到文本 checkpoint：{args.text_ckpt}（将使用随机权重）")
-
     vlm = None
     if Path(args.vlm_ckpt).exists():
         raw = yaml.safe_load(Path(args.vlm_config).read_text(encoding="utf-8"))
@@ -49,7 +41,7 @@ def load_models(args):
         vlm.load_state_dict(torch.load(args.vlm_ckpt, map_location="cpu", weights_only=False)["model"])
     else:
         print(f"[warn] 未找到 VLM checkpoint：{args.vlm_ckpt}（图片页不可用）")
-    return tok, text_model, vlm
+    return tok, vlm
 
 
 def load_chat_model(args, tok):
@@ -114,8 +106,6 @@ def build_demo(tok, chat_model, vlm):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tokenizer_dir", default="data/tokenizer/qwen2.5-0.5b")
-    ap.add_argument("--text_config", default="configs/gpt_tinystories.yaml")
-    ap.add_argument("--text_ckpt", default="out/gpt/latest.pt")
     ap.add_argument("--sft_config", default="configs/sft_zh.yaml")
     ap.add_argument("--sft_ckpt", default="out/sft/latest.pt")
     ap.add_argument("--vlm_config", default="configs/vlm_children.yaml")
@@ -124,7 +114,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="只构建模型与界面并退出（冒烟测试）")
     args = ap.parse_args()
 
-    tok, text_model, vlm = load_models(args)
+    tok, vlm = load_models(args)
     demo = build_demo(tok, load_chat_model(args, tok), vlm)
     if args.check:
         print(f"[check] 界面构建成功；VLM 可用：{vlm is not None}")

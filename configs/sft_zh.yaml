@@ -19,8 +19,8 @@ data:
   sft_val: data/processed/sft/val.npz
   max_len: 2048
 train:
-  batch_size: 8
-  grad_accum: 4
+  batch_size: 1
+  grad_accum: 32
   lr: 1.0e-4
   min_lr: 1.0e-5
   warmup_steps: 50

@@ -23,8 +23,13 @@ def check_output(text: str, stopped: bool) -> dict:
     t = (text or "").strip()
     non_empty = len(t) >= 2
     grams = [t[i:i + 2] for i in range(len(t) - 1)]
-    rep = (max(Counter(grams).values()) / len(grams)) if grams else 1.0
-    no_repeat = rep < 0.5
+    # 太短的答案（不足 4 个二元组）无法可靠判断复读，直接视为不重复，
+    # 否则像"北京"这种正常短回答会被误判。
+    if len(grams) >= 4:
+        rep = max(Counter(grams).values()) / len(grams)
+        no_repeat = rep < 0.5
+    else:
+        no_repeat = True
     return {"non_empty": non_empty, "no_repeat": no_repeat, "stopped": stopped,
             "ok": non_empty and no_repeat and stopped}
 

@@ -192,8 +192,13 @@ npz 里是三个扁平数组：`ids`、`labels`（含 `-100` 掩码）、`offset
 
 ## 7. SFT 训练与 loss 曲线
 
-`configs/sft_zh.yaml` 关键参数：`lr=1e-4`、`batch_size=8, grad_accum=4`、
+`configs/sft_zh.yaml` 关键参数：`lr=1e-4`、`batch_size=1, grad_accum=32`、
 `max_steps=1500`、`out_dir=out/sft`。
+
+> **显存注意（本机实测）**：在 16GB 的 RTX 5080 上，`ctx_len=2048` 时把
+> `batch_size` 提到 >1 会把中间张量挤到共享内存，导致变慢甚至 OOM。安全做法是
+> **`batch_size: 1`**，要等效大 batch 只用更大的 `grad_accum`
+> （当前 `1×32=32`）。这和预训练的结论一致（见第 4 节）。
 
 ```powershell
 # 从预训练 checkpoint 初始化（默认 out/gpt_pretrain/latest.pt）

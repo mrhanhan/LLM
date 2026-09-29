@@ -101,6 +101,11 @@ def build_sft_example(tok, messages: list[dict], max_len: int = 2048):
     if len(out_ids) > max_len:                      # 前缀本身已超长：保守截断
         out_ids = out_ids[:max_len]
         out_labels = out_labels[:max_len]
+    # 对齐约定（与 GPT.forward 一致）：logits[t] 预测的是 token t+1，而交叉熵直接比较
+    # logits[t] 与 targets[t]，所以 labels[t] 必须是 ids[t+1]。上面的 labels 仍与 ids
+    # 逐位对齐，这里整体左移一位并给末位补 -100（ignore_index）：每个被监督 token 的
+    # 目标于是挂在它前一个位置上——第一个 assistant body token 的目标就落在它的前一位。
+    out_labels = out_labels[1:] + [-100]
     return out_ids, out_labels
 
 
