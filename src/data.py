@@ -349,3 +349,67 @@ class CaptionDataset(Dataset):
         it = self.items[i]
         img = Image.open(self.raw_dir / it["image"]).convert("RGB").resize((self.img_size, self.img_size))
         return {"image": image_to_tensor(img), "caption": it["caption"]}
+
+
+# ---------------------------------------------------------------------------
+# fineweb-2 远程中文语料：按 row-group 流式读取 + 本地文本缓存
+# ---------------------------------------------------------------------------
+FINEWEB_REPO = "HuggingFaceFW/fineweb-2"
+
+
+def iter_parquet_text(pf, text_col: str = "text", max_bytes: int | None = None):
+    """遍历 ParquetFile 的 row-group，逐条产出 text，累计字节数达到 max_bytes 即停。
+
+    教学注释：fineweb-2 单片约 4.8GB，全下太浪费；按 row-group 读取可以让
+    HfFileSystem 只请求需要的分块（每个分块约十几 MB）。
+    """
+    total = 0
+    for gi in range(pf.metadata.num_row_groups):
+        col = pf.read_row_group(gi, columns=[text_col]).column(text_col)
+        for t in col.to_pylist():
+            if not t:
+                continue
+            yield t
+            total += len(t.encode("utf-8"))
+            if max_bytes is not None and total >= max_bytes:
+                return
+
+
+def open_remote_parquet(repo: str, path_in_repo: str, block_size: int = 4 * 1024 * 1024):
+    """用 HfFileSystem 远程打开 parquet。返回 (ParquetFile, file_obj)，用完需关闭 file_obj。"""
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem()
+    f = fs.open(f"datasets/{repo}/{path_in_repo}", "rb", block_size=block_size)
+    return pq.ParquetFile(f), f
+
+
+def read_fineweb_cached(repo: str, lang: str, split: str, shard: str,
+                        max_bytes: int | None, cache_path: str):
+    """读取 fineweb 文本：cache_path 存在则直接读 gz 缓存，否则远程读并写缓存。
+
+    教学注释：抽取出的文本落盘缓存，既省代理流量，也保证断点可复现。
+    """
+    import gzip
+    from pathlib import Path
+
+    cp = Path(cache_path)
+    if cp.exists():
+        with gzip.open(cp, "rt", encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if line:
+                    yield line
+        return
+
+    path_in_repo = f"data/{lang}/{split}/{shard}"
+    pf, fobj = open_remote_parquet(repo, path_in_repo)
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with gzip.open(cp, "wt", encoding="utf-8") as out:
+            for t in iter_parquet_text(pf, max_bytes=max_bytes):
+                out.write(t.replace("\n", " ") + "\n")
+                yield t
+    finally:
+        fobj.close()
