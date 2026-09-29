@@ -30,3 +30,22 @@ def test_read_fineweb_cached_uses_cache_without_network(tmp_path):
     out = list(read_fineweb_cached("n/a", "cmn_Hani", "train", "x.parquet",
                                    max_bytes=None, cache_path=str(cache)))
     assert out == ["第一行", "第二行"]
+
+
+def test_cached_and_live_paths_agree(tmp_path, monkeypatch):
+    import src.data as data
+
+    p = tmp_path / "c.parquet"
+    _make_parquet(p, ["第一行\n第二行"])
+    monkeypatch.setattr(
+        data, "open_remote_parquet",
+        lambda repo, path_in_repo: (pq.ParquetFile(p), open(p, "rb")),
+    )
+    cache = tmp_path / "train.jsonl.gz"
+
+    first = list(read_fineweb_cached("n/a", "cmn_Hani", "train", "x.parquet",
+                                     max_bytes=None, cache_path=str(cache)))
+    second = list(read_fineweb_cached("n/a", "cmn_Hani", "train", "x.parquet",
+                                      max_bytes=None, cache_path=str(cache)))
+    assert first == second
+    assert first == ["第一行 第二行"]

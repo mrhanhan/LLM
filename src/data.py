@@ -409,7 +409,8 @@ def read_fineweb_cached(repo: str, lang: str, split: str, shard: str,
     try:
         with gzip.open(cp, "wt", encoding="utf-8") as out:
             for t in iter_parquet_text(pf, max_bytes=max_bytes):
-                out.write(t.replace("\n", " ") + "\n")
+                t = t.replace("\n", " ")
+                out.write(t + "\n")
                 yield t
     finally:
         fobj.close()
