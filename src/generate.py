@@ -46,12 +46,14 @@ def generate(model, tokenizer, prompt: str, max_new_tokens: int = 128,
              temperature: float = 0.8, top_k=None, top_p: float | None = 0.9,
              repetition_penalty: float = 1.0, device: str = "cuda",
              generator=None, stop_ids: list[int] | None = None,
-             add_bos: bool = True) -> str:
+             add_bos: bool = True, return_count: bool = False):
     """给定提示词，自回归生成文本。使用 KV 缓存避免重复计算。
 
     教学注释：stop_ids 支持"遇到任一指定 token 就停"，聊天场景用 <|im_end|> 停止，
     基座续写沿用 eos。stop token 本身不进入输出。add_bos=False 供对话模板使用：
     Qwen 的 bos 会映射成 <|endoftext|>，训练样本并不以它开头，须避免分布漂移。
+    return_count=True 时返回 (text, n_generated)，n_generated 是实际追加的 token 数，
+    精确判定是否被 stop 提前打断（避免 decode→encode 往返不保真）。
     """
     model.eval()
     model.to(device)
@@ -73,4 +75,6 @@ def generate(model, tokenizer, prompt: str, max_new_tokens: int = 128,
         generated.append(tid)
         idx = torch.cat([idx, nxt.view(1, 1).to(device)], dim=1)
 
+    if return_count:
+        return tokenizer.decode(generated), len(generated)
     return tokenizer.decode(generated)

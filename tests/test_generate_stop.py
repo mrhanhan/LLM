@@ -83,3 +83,30 @@ def test_generate_add_bos_flag():
     generate(with_bos, tok, prompt, max_new_tokens=1, temperature=0.0,
              stop_ids=[stop], device="cpu", add_bos=True)
     assert with_bos.first_tokens[0] == tok.special_id("bos")
+
+
+def test_generate_return_count_zero_when_stopped_immediately():
+    tok = CharTokenizer.train(["你好abc"])
+    x = tok.encode("a")[0]
+    model = _FakeModel(tok.vocab_size, x)
+    out = generate(model, tok, "你好", max_new_tokens=20, temperature=0.0,
+                   stop_ids=[x], device="cpu", return_count=True)
+    assert isinstance(out, tuple)
+    text, n = out
+    assert text == "" and n == 0                    # 首 token 即 stop，追加数为 0
+
+
+def test_generate_return_count_equals_max_without_stop():
+    tok = CharTokenizer.train(["你好abc"])
+    eos = tok.special_id("eos")
+    model = _FakeModel(tok.vocab_size, eos)
+    text, n = generate(model, tok, "你好", max_new_tokens=3, temperature=0.0,
+                       stop_ids=[], device="cpu", return_count=True)
+    assert n == 3                                   # 无停止 token 时跑满上限
+
+
+def test_generate_default_returns_str():
+    tok = CharTokenizer.train(["你好abc"])
+    model = _FakeModel(tok.vocab_size, tok.special_id("eos"))
+    out = generate(model, tok, "你好", max_new_tokens=3, temperature=0.0, device="cpu")
+    assert isinstance(out, str)                     # 默认保持原有 str 返回

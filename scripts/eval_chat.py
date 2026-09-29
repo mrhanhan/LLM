@@ -34,13 +34,13 @@ def main():
         print(f"[warn] 未找到 {args.ckpt}，使用随机权重")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     stop = stop_ids(tok)
+    generator = torch.Generator(device=device).manual_seed(0)
 
     def ask(messages):
         prompt = render_messages(tok, messages, add_generation_prompt=True)
-        raw = generate(model, tok, prompt, max_new_tokens=args.max_new_tokens,
-                       temperature=0.7, top_p=0.9, device=device, stop_ids=stop,
-                       add_bos=False)
-        n_new = len(tok.encode(raw))
+        raw, n_new = generate(model, tok, prompt, max_new_tokens=args.max_new_tokens,
+                              temperature=0.7, top_p=0.9, device=device, stop_ids=stop,
+                              add_bos=False, generator=generator, return_count=True)
         return strip_special_text(tok, raw), n_new < args.max_new_tokens
 
     lines, n_ok = ["# SFT 对话评测", ""], 0
