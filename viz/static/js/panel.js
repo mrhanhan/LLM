@@ -348,6 +348,7 @@ export class Panel {
     }
 
     for (const e of (spec && spec.extra_specs) || []) {
+      if (info.kind === 'module' && e === info.mod) continue;
       appendModule(body, e, e.label || '');
     }
 

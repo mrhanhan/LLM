@@ -558,12 +558,14 @@ function exitArch() {
   if (leftEl) leftEl.style.display = source === 'live' ? 'block' : 'none';
   if (trainPanel) trainPanel.style.display = source === 'live' ? 'block' : 'none';
   if (shelf) setBadges(shelf.graph);
+  viewMode = source;
 }
 
 async function switchMode(mode) {
   if (mode === 'arch') return enterArch();
   if (viewMode === 'arch') exitArch();
   if (mode === source && !archGroup.visible) {
+    viewMode = mode;
     showWeightGroups();
     return true;
   }

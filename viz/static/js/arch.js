@@ -64,11 +64,22 @@ function boardLabel(kind, board) {
   return board.label || '模块';
 }
 
+function disposeBoard(obj) {
+  if (obj.geometry) obj.geometry.dispose();
+  const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+  for (const mat of mats) {
+    if (!mat) continue;
+    if (mat.map) mat.map.dispose();
+    mat.dispose();
+  }
+}
+
 // 构建竖直层栈：每行一块层板 + 首尾模块板（词嵌入 / extra_specs / 输出头）。
 export async function showArch(group, panel, modelId) {
   const spec = await loadArch(modelId);
   currentSpec = spec;
   currentRows = spec.rows || [];
+  for (const child of group.children) disposeBoard(child);
   group.clear();
   panel?.close?.();
 
