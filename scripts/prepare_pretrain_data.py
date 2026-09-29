@@ -24,7 +24,7 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    setup_hf(args.endpoint, args.proxy or cfg.data.proxy)
+    setup_hf(args.endpoint or cfg.data.hf_endpoint, args.proxy or cfg.data.proxy)
     tok = QwenTokenizer.load(cfg.data.tokenizer_dir)
 
     train_txt = read_fineweb_cached(FINEWEB_REPO, "cmn_Hani", "train",
@@ -33,7 +33,8 @@ def main():
     val_txt = read_fineweb_cached(FINEWEB_REPO, "cmn_Hani", "test",
                                   "000_00000.parquet", max(2_000_000, args.max_bytes // 200),
                                   "data/raw/text/fineweb_cmn/val.jsonl.gz")
-    n_train, n_val = build_text_bin(tok, train_txt, args.out, val_bin_path=args.val)
+    n_train, _ = build_text_bin(tok, train_txt, args.out, val_bin_path=None, val_ratio=0.0)
+    n_val, _ = build_text_bin(tok, val_txt, args.val, val_bin_path=None, val_ratio=0.0)
     print(f"完成：train={n_train} tokens, val={n_val} tokens")
 
 
