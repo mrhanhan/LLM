@@ -23,6 +23,7 @@ class SimpleEngine:
         self.model = model
         self.batch_fn = batch_fn
         self.device = device
+        self.model.to(self.device)
         self.on_step = on_step
         self.cfg = TrainConfig(
             lr=lr, min_lr=min_lr if min_lr is not None else lr * 0.1,
@@ -108,6 +109,8 @@ class _VizLoop:
         self.model.eval()
 
     def _launch(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
         self._stop.clear()
         self._thread = threading.Thread(target=self.viz_run, daemon=True)
         self._thread.start()
