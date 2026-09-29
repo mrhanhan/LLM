@@ -1,4 +1,9 @@
-const j = async (u) => (await fetch(u)).json();
+const j = async (u) => {
+  const res = await fetch(u);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
+};
 const q = (o) => new URLSearchParams(o).toString();
 
 export const getModel = (source = 'live') => j(`/api/model?${q({ source })}`);

@@ -26,6 +26,12 @@
   </header>
   <aside id="left">
     <div class="train-panel" id="train-panel">
+      <label class="arch-label" for="train-target">训练目标</label>
+      <select id="train-target">
+        <option value="live">实时小模型（d_model=64 / 4 层）</option>
+        <option value="ckpt">192M 微调（--ckpt 权重）</option>
+        <option value="scratch">192M 从头训练</option>
+      </select>
       <div class="train-row">
         <button id="btn-train-start">开始训练</button>
         <button id="btn-train-stop" disabled>停止</button>
@@ -39,12 +45,27 @@
     </div>
   </aside>
   <aside id="drawer" class="hidden"><div id="drawerBody"><canvas id="matrix2d" width="360" height="360"></canvas></div></aside>
+  <div id="navhud" aria-label="视角平移">
+    <button data-pan="up" title="上移（W / ↑）">▲</button>
+    <div class="navhud-mid">
+      <button data-pan="left" title="左移（A / ←）">◀</button>
+      <button data-pan="reset" title="复位视角">⌖</button>
+      <button data-pan="right" title="右移（D / →）">▶</button>
+    </div>
+    <button data-pan="down" title="下移（S / ↓）">▼</button>
+  </div>
   <footer id="bottom">
     <div id="player"><button id="btn-play">▶</button><button id="btn-step">⏭</button><span id="prompt"></span></div>
     <canvas id="loss" width="240" height="48"></canvas>
     <canvas id="attn" width="240" height="48"></canvas>
+    <div id="topn"></div>
     <div id="hover"></div>
   </footer>
+  <div id="kvhud" class="hidden">
+    <div class="kvhud-title">KV Cache</div>
+    <div class="kvhud-body"></div>
+    <canvas width="220" height="36"></canvas>
+  </div>
   <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

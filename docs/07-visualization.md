@@ -10,7 +10,7 @@
 - 统计：`viz/stats.py`（权重统计、更新幅度、激活 hook）、`viz/neurons.py`（神经元点云 PCA）
 - 运行时：`viz/runtime.py`（小字符级 GPT、实时训练线程、逐 token 推理）
 - 架构：`viz/arch.py` + `viz/architectures/*.json`
-- 前端：`viz/static/`（`index.html` + `style.css` + `js/{main,shelf,matrix,links,panel,cloud,colors,api,arch}.js` + vendored Three.js/KaTeX）
+- 前端：`viz/static/`（`index.html` + `style.css` + `js/{main,shelf,matrix,links,panel,cloud,colors,api,arch,kv,toplabels}.js` + vendored Three.js/KaTeX）
 
 > 旧的 `viz/topology.py` 与 `viz/static/app.js` 已在本轮重构中删除，
 > 其能力分别并入 `viz/graph.py` / `viz/stats.py` 与模块化的 `viz/static/js/`。
@@ -43,8 +43,12 @@
 | 模式 | 数据源 | 说明 |
 |---|---|---|
 | **真实模型检视** | 本地 checkpoint（`--ckpt`） | 静态权重网格 + 逐 token 推理流动，主力视图 |
-| **实时训练** | 内置字符级小模型 | 实时权重变化、loss 曲线与 L3 流带 |
+| **实时训练** | 内置小模型 / `--ckpt` 192M / 随机初始化 192M | 实时权重变化、loss 曲线与 L3 流带；训练目标由左栏下拉选择 |
 | **架构浏览器** | `viz/architectures/*.json` | `viz/architectures/` 下的全部真实模型规格（当前 17 个）的**仅结构 / 公式 / 源码**（无权重） |
+
+> 未用 `--ckpt` 启动时，服务端 `has_ckpt=false`，前端会自动禁用顶栏「真实模型检视」
+> 按钮并给出提示；此时直接请求 `source=ckpt` 的接口返回 `400` 及友好错误信息。
+
 
 > 「推理播放」不是独立模式，而是检视 / 训练模式下均可触发的动作
 > （检视用真实模型、训练用小模型）。
@@ -58,11 +62,11 @@
 ┌──────────────────────────────────────────────────────────────┐
 │ 顶栏  brand │ 模式[检视·训练·架构] │ 模型/checkpoint │ 状态        │
 ├───────────┬──────────────────────────────────┬───────────────┤
-│ 左栏       │                                  │ 右抽屉(2D)     │
-│ 训练控制    │     3D 书架主视图 (WebGL)         │ 选中矩阵热力图  │
-│ / 架构选择  │  层托盘·矩阵板·连线·流带          │ 图例/统计/公式/代码│
+│ 左栏       │                                  │ 右抽屉(标签页)  │
+│ 训练控制    │     3D 书架主视图 (WebGL)         │ 矩阵/结果/      │
+│ / 架构选择  │  层托盘·矩阵板·连线·流带·缓存条    │ KV/TopN        │
 ├───────────┴──────────────────────────────────┴───────────────┤
-│ 底栏  推理播放器(▶/⏭) │ 训练 loss 曲线 │ 注意力分布 │ 悬停数值      │
+│ 底栏  播放器(▶/⏭) │ loss │ 注意力 │ topN │ 悬停数值            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,7 +76,8 @@
   `词嵌入 → 层0…层N → 最终 Norm + 输出头`。
 - **点击某层**展开该层（同一时刻**只展开一层**，其余层降到低透明度），
   再点一次收起；薄板透明度做缓动过渡。
-- 旋转 / 缩放 / 平移由 `OrbitControls` 提供。
+- 相机操作：**左键拖拽旋转**、**右键 / 中键拖拽平移**、`Shift`（或 `Ctrl`）+ 左键平移、
+  滚轮缩放；键盘 `WASD` / 方向键平移；屏幕左侧 HUD（`▲ ◀ ⌖ ▶ ▼`）平移与一键复位。
 
 ### 3.2 层内：单排流水线（M1）+ 分块聚合下钻（M2）
 
@@ -95,14 +100,18 @@
 - **L3 数据流带**：推理时相邻层托盘之间叠加半透明流带，颜色 / 透明度随该层
   代表矩阵的**激活值**推进并在 token 间缓动。
 
-### 3.4 右抽屉（2D 热力图）
+### 3.4 右抽屉（标签页：矩阵 / 结果 / KV Cache / TopN）
 
-点击矩阵板后右侧抽屉展示：
+点击矩阵板后右侧抽屉打开，顶部四个标签页：
 
-- 矩阵全名、标签、`shape = out × in`、role 与元素数；
-- 2D 热力图（服务端 `/api/matrix/{name}/grid` 取分块网格，客户端按发散色阶着色）；
-- **色阶图例**（min/max 数值）与「适配 / 块 / 元素」三档网格粒度切换
-  （192 / 64 / 256，tiles 越大越接近逐元素）。
+- **矩阵**：矩阵全名、标签、`shape = out × in`、role 与元素数；2D 热力图（服务端
+  `/api/matrix/{name}/grid` 取分块网格，客户端按发散色阶着色）；色阶图例与
+  「适配 / 块 / 元素」三档网格粒度（192 / 64 / 256）。对小矩阵另有「点云」与
+  「神经元连线」按钮（见 3.5）。
+- **结果**：推理生成文本（prompt 灰、续写亮，多行自动换行可滚动），以及推理参数
+  `温度 / Top-K / Top-P / 最大 token / TopN / 种子`（留空用默认）。
+- **KV Cache**：逐层缓存长度、估算显存与 K / V 热力图，随推理逐 token 增长。
+- **TopN**：输出层每一步的 topN 候选词概率条形图（黄色为选中词）。
 
 ### 3.5 神经元点云
 
@@ -123,9 +132,24 @@
 - 点「开始训练」→ 后端线程按间隔把每个矩阵的
   `norm / mean / max / delta`（delta = 相对上一步的更新幅度）经 WebSocket 的
   `tick` 推给前端；前端刷新矩阵板颜色 / 自发光与连线粗细，并滚动 **loss 曲线**。
+- **训练目标可选**（左栏下拉，`POST /api/train/start {target}`）：
+  - `live`：内置字符级小模型（d_model=64 / 4 层），几秒见效；
+  - `ckpt`：在 `--ckpt` 加载的 **192M** 权重上继续微调（与「真实模型检视」共享同一模型，
+    训练能直接改变所见权重）；
+  - `scratch`：按 `configs/gpt_tinystories.yaml` 的 `model` 段随机初始化一个同结构
+    **192M** 模型从头训练。
+  `ckpt` / `scratch` 使用 Qwen 分词器与 `data.processed/text/train.bin` 数据，
+  lr / weight_decay / grad_clip 取自 config 的 `train` 段；有 GPU 时自动用 cuda。
+- **训练一启动即可见**：折叠状态下每块**层薄板**按其**层内矩阵聚合**的 norm / delta
+  持续变色（不必先点开某层）；首个 `tick` 还会**自动展开当前变化最大的一层**，
+  使其矩阵板实时刷新。
 - 点「推理 ▶ / 单步 ⏭」→ 后端逐 token 生成，每步用 forward hook 读取各模块
-  **激活值**，以 `token` 消息推给前端：L3 流带点亮推进、注意力分布条同步刷新、
-  底部显示已生成文本。
+  **激活值**，并以 `token` 消息推给前端：L3 流带点亮推进、注意力分布条刷新、
+  右侧抽屉显示**生成文本** + **输出层 topN 概率** + **逐层 KV cache**；
+  3D 场景里每层旁出现**缓存长条**（长度 ∝ 已缓存 token 数、颜色 ∝ 数值），
+  输出头旁浮出 **topN 词标签**，左下角出现 **KV 占用浮层**（总长度 / 估算显存 / 逐层柱状）。
+- 推理参数（温度 / Top-K / Top-P / 最大 token / TopN / 种子）在抽屉「结果」页配置，
+  经 `POST /api/infer` 透传给 `stream_generate`。
 
 ### 3.8 架构浏览器
 
@@ -146,7 +170,7 @@ KaTeX 渲染该层公式并附对应源码。数据来自 `viz/architectures/<id
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/` | `index.html` |
-| GET | `/api/model?source=ckpt\|live` | 模型图（layers / modules / matrices / connections）+ 全局色阶 `global_absmax` |
+| GET | `/api/model?source=ckpt\|live\|scratch` | 模型图（layers / modules / matrices / connections）+ 全局色阶 `global_absmax` |
 | GET | `/api/matrix/{name}/grid?source=&tiles=64` | 分块聚合二维网格（每块均值），返回 `{shape, grid, values}` |
 | GET | `/api/matrix/{name}/png?source=&tiles=&norm=global\|matrix` | 发散色阶 PNG 纹理（客户端当贴图用） |
 | GET | `/api/matrix/{name}/stats?source=` | 该矩阵 `{shape, vmin, vmax, absmax, mean, std}` |
@@ -155,19 +179,19 @@ KaTeX 渲染该层公式并附对应源码。数据来自 `viz/architectures/<id
 | GET | `/api/neurons?matrix=&source=&n=&top=` | PCA 神经元点云 |
 | GET | `/api/arch/list` · `/api/arch/{id}` | 架构浏览器列表 / 详情 |
 | GET | `/compare` | 模型横向对比页（`docs/models/compare.html`） |
-| POST | `/api/train/start` · `/api/train/stop` | 触发小模型实时训练 |
-| POST | `/api/infer` | 触发逐 token 推理，body `{source, prompt, max_new_tokens}` |
+| POST | `/api/train/start` · `/api/train/stop` | 触发训练；body `{target: live\|ckpt\|scratch}`（默认 live） |
+| POST | `/api/infer` | 触发逐 token 推理，body `{source, prompt, max_new_tokens, temperature, top_k, top_p, top_n, seed}` |
 
 ### 4.2 WebSocket `ws://host/ws`
 
 | type | 内容 |
 |---|---|
-| `init` | `{source, device, global_absmax, model, layers, matrices, connections, cube_threshold}` |
-| `tick` | `{step, loss, lr, values:{matrixName:{norm, mean, max, n, delta}}}` |
-| `token` | `{token, id, text, values:{matrixName:{act}}, attn:[...]}`（`attn` 为最后最多 24 个位置的注意力） |
+| `init` | `{has_ckpt, source}`（轻量握手；完整模型图由前端另行请求 `/api/model?source=`） |
+| `tick` | `{step, loss, lr, target, values:{matrixName:{norm, mean, max, n, delta}}}` |
+| `token` | `{token, id, text, values:{matrixName:{act}}, attn:[...], topn:[{id,token,prob}], kv:{n_layer,total_len,total_bytes,layers:[{layer,len,bytes,heads,head_dim,k:{rows,cols,values},v:{...}}]}}` |
 | `status` | `{training: bool}` |
 
-> WS 连接建立后立即收到一条 `init`（内容与 `/api/model` 的图一致），
+> WS 连接建立后立即收到一条轻量 `init`（含 `has_ckpt`，用于禁用/启用「真实模型检视」），
 > 随后是被动推送的 `tick` / `token` / `status`。
 
 ## 5. 性能策略

@@ -31,7 +31,7 @@ function norm01(v, b) {
 
 // 对矩阵 mesh 做可视化调制：norm 决定冷暖色调，delta 决定自发光强度。
 // 纹理面片保留权重纹理，仅叠加明暗；实例化立方体直接改基础色。
-function applyValueVisual(mesh, t, dt) {
+function applyValueVisual(mesh, t, dt, withOpacity = true) {
   const mat = mesh.material;
   if (!mat || Array.isArray(mat)) return;
   const [r, g, b] = divergingRGB(t * 2 - 1);
@@ -43,7 +43,7 @@ function applyValueVisual(mesh, t, dt) {
     const e = 0.15 + 0.5 * dt;
     mat.emissive.setRGB(r * e, g * e, b * e);
   }
-  if (mat.transparent && typeof mat.opacity === 'number') {
+  if (withOpacity && mat.transparent && typeof mat.opacity === 'number') {
     mat.opacity = 0.55 + 0.45 * t;
   }
 }
@@ -215,8 +215,10 @@ export class Shelf {
   updateValues(values) {
     if (!values) return;
     const items = [];
+    const layerAgg = new Map();
     for (const mesh of this.meshes) {
-      const name = mesh.userData && mesh.userData.name;
+      const ud = mesh.userData || {};
+      const name = ud.name;
       if (!name) continue;
       const raw = values[name];
       if (raw == null) continue;
@@ -226,6 +228,16 @@ export class Shelf {
         ? raw.delta
         : null;
       items.push({ mesh, n, delta });
+      const layer = (ud.spec && ud.spec.layer) || ud.layer;
+      if (layer != null) {
+        let agg = layerAgg.get(layer);
+        if (!agg) {
+          agg = { n: [], d: [] };
+          layerAgg.set(layer, agg);
+        }
+        agg.n.push(n);
+        if (delta != null) agg.d.push(delta);
+      }
     }
     if (!items.length) return;
     const nb = bounds(items.map((it) => it.n));
@@ -233,7 +245,21 @@ export class Shelf {
     for (const it of items) {
       const t = norm01(it.n, nb);
       const dt = it.delta == null ? 0 : norm01(it.delta, db);
-      applyValueVisual(it.mesh, t, dt);
+      applyValueVisual(it.mesh, t, dt, true);
+    }
+    const aggLayers = [];
+    for (const [layer, agg] of layerAgg) {
+      const mn = agg.n.reduce((a, b) => a + b, 0) / agg.n.length;
+      const md = agg.d.length ? agg.d.reduce((a, b) => a + b, 0) / agg.d.length : 0;
+      aggLayers.push({ layer, mn, md });
+    }
+    const lnb = bounds(aggLayers.map((v) => v.mn));
+    const ldb = bounds(aggLayers.map((v) => v.md));
+    for (const v of aggLayers) {
+      const tray = this.trays.get(v.layer);
+      const slab = tray && tray.userData.slab;
+      if (!slab) continue;
+      applyValueVisual(slab, norm01(v.mn, lnb), norm01(v.md, ldb), false);
     }
   }
 }

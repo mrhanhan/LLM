@@ -44,10 +44,10 @@ def summarize(tensors: Iterable[torch.Tensor]) -> dict:
 class WeightTracker:
     """记录上一份权重快照，用来衡量"这一步权重改了多少"（相对更新幅度）。
 
-    大模型（>800 万参数）自动跳过，避免翻倍显存。
+    超过阈值的大模型自动跳过，避免在显存受限时翻倍占用。
     """
 
-    MAX_PARAMS = 8_000_000
+    MAX_PARAMS = 300_000_000
 
     def __init__(self) -> None:
         self.prev: dict[str, torch.Tensor] = {}

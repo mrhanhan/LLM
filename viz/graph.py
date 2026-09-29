@@ -93,6 +93,7 @@ def build_graph(model: nn.Module, source: str = "live") -> dict:
         "cube_threshold": CUBE_THRESHOLD,
         "model": {"name": getattr(cfg, "name", source), "d_model": cfg.d_model,
                   "n_layer": n_layer, "n_head": cfg.n_head, "n_kv_head": cfg.n_kv_head,
-                  "d_ff": cfg.d_ff, "vocab_size": cfg.vocab_size, "params": n_params},
+                  "d_ff": cfg.d_ff, "vocab_size": cfg.vocab_size,
+                  "ctx_len": getattr(cfg, "ctx_len", None), "params": n_params},
         "layers": layers, "matrices": matrices, "connections": connections,
     }

@@ -4,7 +4,7 @@ from pathlib import Path
 
 STATIC = Path("viz/static")
 JS = ["api.js", "colors.js", "shelf.js", "matrix.js", "links.js",
-      "panel.js", "cloud.js", "arch.js", "main.js"]
+      "panel.js", "cloud.js", "arch.js", "kv.js", "toplabels.js", "main.js"]
 
 
 def test_static_files_exist():

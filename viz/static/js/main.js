@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { getModel, getCell, connectWS } from './api.js';
 import { Shelf } from './shelf.js';
-import { Links, Flow } from './links.js';
+import { Links, Flow, layerOfMatrixName } from './links.js';
 import { cellFromIntersection } from './matrix.js';
 import { Panel } from './panel.js';
+import { KvBars } from './kv.js';
+import { TopLabels } from './toplabels.js';
 import { showCloud, resizeCloud, disposeCloud } from './cloud.js';
 import { loadArchList, showArch, getArchSpec } from './arch.js';
 
@@ -20,6 +22,11 @@ export const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
 camera.position.set(0, 0, 18);
 export const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+controls.mouseButtons = {
+  LEFT: THREE.MOUSE.ROTATE,
+  MIDDLE: THREE.MOUSE.PAN,
+  RIGHT: THREE.MOUSE.PAN,
+};
 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 const key = new THREE.DirectionalLight(0xbcd2ff, 1.1); key.position.set(6, 10, 8); scene.add(key);
 
@@ -33,18 +40,127 @@ panel.cloudGroup = cloudGroup;
 const flowGroup = new THREE.Group();
 scene.add(flowGroup);
 
+const kvGroup = new THREE.Group();
+scene.add(kvGroup);
+const kvBars = new KvBars(kvGroup);
+
+const topGroup = new THREE.Group();
+scene.add(topGroup);
+const topLabels = new TopLabels(topGroup);
+window.__kv = kvBars;
+window.__top = topLabels;
+
 const archGroup = new THREE.Group();
 archGroup.visible = false;
 scene.add(archGroup);
 
 // 架构层栈很高，按总高重新摆相机。
+let defaultPose = null;
 window.__frameArch = (height) => {
   const fov = (camera.fov * Math.PI) / 180;
   const dist = Math.max(14, ((height / 2) / Math.tan(fov / 2)) * 1.2);
   camera.position.set(0, 0, dist);
   controls.target.set(0, 0, 0);
   controls.update();
+  defaultPose = { pos: camera.position.clone(), target: controls.target.clone() };
 };
+
+const PAN_SPEED = 6;
+const _panOffset = new THREE.Vector3();
+const _panV = new THREE.Vector3();
+
+function panCamera(deltaX, deltaY) {
+  const el = renderer.domElement;
+  if (!camera.isPerspectiveCamera || !el.clientHeight) return;
+  _panOffset.set(0, 0, 0);
+  _panV.copy(camera.position).sub(controls.target);
+  const targetDistance = _panV.length() * Math.tan(((camera.fov / 2) * Math.PI) / 180);
+  _panV
+    .setFromMatrixColumn(camera.matrix, 0)
+    .multiplyScalar((-2 * deltaX * targetDistance) / el.clientHeight);
+  _panOffset.add(_panV);
+  if (controls.screenSpacePanning) {
+    _panV.setFromMatrixColumn(camera.matrix, 1);
+  } else {
+    _panV.setFromMatrixColumn(camera.matrix, 0).crossVectors(camera.up, _panV);
+  }
+  _panV.multiplyScalar((2 * deltaY * targetDistance) / el.clientHeight);
+  _panOffset.add(_panV);
+  camera.position.add(_panOffset);
+  controls.target.add(_panOffset);
+  controls.update();
+}
+
+function resetView() {
+  const pose = defaultPose || {
+    pos: new THREE.Vector3(0, 0, 18),
+    target: new THREE.Vector3(0, 0, 0),
+  };
+  camera.position.copy(pose.pos);
+  controls.target.copy(pose.target);
+  controls.update();
+}
+
+const kbPan = new Set();
+const hudPan = new Set();
+const KEY_DIR = {
+  arrowleft: 'left', arrowright: 'right', arrowup: 'up', arrowdown: 'down',
+  a: 'left', d: 'right', w: 'up', s: 'down',
+};
+
+function isTyping() {
+  const el = document.activeElement;
+  return !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+}
+
+addEventListener('keydown', (e) => {
+  if (isTyping()) return;
+  const dir = KEY_DIR[e.key.toLowerCase()];
+  if (!dir) return;
+  kbPan.add(dir);
+  e.preventDefault();
+});
+addEventListener('keyup', (e) => {
+  const dir = KEY_DIR[e.key.toLowerCase()];
+  if (dir) kbPan.delete(dir);
+});
+addEventListener('blur', () => kbPan.clear());
+
+function bindHud() {
+  const hud = document.getElementById('navhud');
+  if (!hud) return;
+  for (const btn of hud.querySelectorAll('button[data-pan]')) {
+    const dir = btn.dataset.pan;
+    if (dir === 'reset') {
+      btn.addEventListener('click', resetView);
+      continue;
+    }
+    const start = (e) => {
+      hudPan.add(dir);
+      e.preventDefault();
+    };
+    const stop = () => hudPan.delete(dir);
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+}
+bindHud();
+
+function applyPanInput() {
+  let dx = 0;
+  let dy = 0;
+  for (const set of [kbPan, hudPan]) {
+    if (set.has('left')) dx += 1;
+    if (set.has('right')) dx -= 1;
+    if (set.has('up')) dy += 1;
+    if (set.has('down')) dy -= 1;
+  }
+  if (dx || dy) panCamera(dx * PAN_SPEED, dy * PAN_SPEED);
+}
+
 
 const CLOUD_BTN_STYLE =
   'margin-top:10px;padding:5px 12px;border-radius:8px;cursor:pointer;' +
@@ -132,6 +248,7 @@ const lossCanvas = document.getElementById('loss');
 const trainStatsEl = document.getElementById('train-stats');
 const startBtn = document.getElementById('btn-train-start');
 const stopBtn = document.getElementById('btn-train-stop');
+const trainTargetSel = document.getElementById('train-target');
 const leftEl = document.getElementById('left');
 const trainPanel = document.getElementById('train-panel') || leftEl;
 const archPanel = document.getElementById('arch-panel');
@@ -211,14 +328,39 @@ function setTraining(on) {
     startBtn.textContent = training ? '训练中…' : '开始训练';
   }
   if (stopBtn) stopBtn.disabled = !training;
+  if (trainTargetSel) trainTargetSel.disabled = training;
+}
+
+function markModeButtons(target) {
+  for (const b of modeButtons) {
+    b.classList.toggle('active', b.dataset.mode === target);
+  }
+}
+
+async function ensureSourceForTraining(target) {
+  if (target === 'ckpt' && !ckptAvailable) return false;
+  if (source === target) return true;
+  const ok = await reload(target);
+  if (ok) {
+    viewMode = target;
+    showWeightGroups();
+  }
+  return ok;
 }
 
 async function trainStart() {
   if (training) return;
+  const target = (trainTargetSel && trainTargetSel.value) || 'live';
+  if (!(await ensureSourceForTraining(target))) return;
+  markModeButtons(target);
   const prev = training;
   setTraining(true);
   try {
-    const res = await fetch('/api/train/start', { method: 'POST' });
+    const res = await fetch('/api/train/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (e) {
     console.error('开始训练失败', e);
@@ -251,10 +393,51 @@ let savedCamera = null;
 window.__shelf = null;
 window.__links = null;
 window.__flow = null;
+let autoExpanded = false;
+
+function maybeAutoExpand(values) {
+  if (autoExpanded || !shelf || shelf.expanded) return;
+  let bestName = null;
+  let best = -1;
+  for (const [name, v] of Object.entries(values || {})) {
+    const d = v && typeof v === 'object' ? v.delta : null;
+    if (typeof d === 'number' && Number.isFinite(d) && d > best) {
+      best = d;
+      bestName = name;
+    }
+  }
+  const layer = layerOfMatrixName(bestName);
+  if (!layer) return;
+  autoExpanded = true;
+  shelf.expand(layer).then(() => links?.rebuild(shelf)).catch(console.error);
+}
 
 const badgeModel = document.getElementById('badge-model');
 const badgeDevice = document.getElementById('badge-device');
 let serverSource = null;
+let ckptAvailable = true;
+const ckptBtn = document.querySelector('.viewswitch button[data-mode="ckpt"]');
+
+function setCkptAvailable(has) {
+  ckptAvailable = !!has;
+  if (ckptBtn) {
+    ckptBtn.disabled = !ckptAvailable;
+    ckptBtn.title = ckptAvailable
+      ? '检视 --ckpt 加载的真实模型'
+      : '服务端未加载 checkpoint：请用 --ckpt <path> 启动后重试';
+  }
+  if (trainTargetSel) {
+    const opt = trainTargetSel.querySelector('option[value="ckpt"]');
+    if (opt) {
+      opt.disabled = !ckptAvailable;
+      opt.textContent = ckptAvailable
+        ? '192M 微调（--ckpt 权重）'
+        : '192M 微调（需 --ckpt）';
+    }
+    if (!ckptAvailable && trainTargetSel.value === 'ckpt') trainTargetSel.value = 'live';
+  }
+}
+setCkptAvailable(true);
 let badgeSource = document.getElementById('badge-source');
 if (!badgeSource && badgeDevice && badgeDevice.parentElement) {
   badgeSource = document.createElement('span');
@@ -284,7 +467,7 @@ function setBadges(graph) {
 // 切换真实 checkpoint / 实时小模型：重建 Shelf + Links + Flow。
 // 成功返回 true；失败返回 false 且保持现有场景/数据源不变（仅记录并提示）。
 async function reload(src) {
-  const next = src === 'ckpt' ? 'ckpt' : 'live';
+  const next = ['live', 'ckpt', 'scratch'].includes(src) ? src : 'live';
   try {
     const graph = await getModel(next);
     cloudOff();
@@ -295,6 +478,9 @@ async function reload(src) {
     modelGroup.clear();
     flowGroup.clear();
     source = next;
+    autoExpanded = false;
+    kvBars.dispose();
+    topLabels.dispose();
     shelf = new Shelf(modelGroup, graph, next);
     window.__shelf = shelf;
     links = new Links(modelGroup, graph);
@@ -304,8 +490,17 @@ async function reload(src) {
     flow = new Flow(flowGroup, graph, shelf);
     window.__flow = flow;
     setBadges(graph);
+    const layers = (graph.layers || []).length;
+    const height = Math.max(1, layers - 1) * 1.25 + 1;
+    const fov = (camera.fov * Math.PI) / 180;
+    defaultPose = {
+      pos: new THREE.Vector3(0, 0, Math.max(14, (height / 2 / Math.tan(fov / 2)) * 1.2)),
+      target: new THREE.Vector3(0, 0, 0),
+    };
     resetLoss();
-    setTrainPanel(next === 'live');
+    updateKvHud(null);
+    setFooterTopN(null);
+    setTrainPanel(true);
     return true;
   } catch (e) {
     console.error(`加载模型图失败（${next}）`, e);
@@ -361,20 +556,24 @@ function runInfer(maxNewTokens) {
   const prompt = (promptInput && promptInput.value.trim()) || '人工智能';
   flow?.reset();
   clearAttn();
+  panel.openInference(prompt);
+  const params = panel.getInferParams ? panel.getInferParams() : {};
+  if (maxNewTokens != null) params.max_new_tokens = maxNewTokens;
   return fetch('/api/infer', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source: source, prompt, max_new_tokens: maxNewTokens }),
+    body: JSON.stringify(Object.assign({ source, prompt }, params)),
   }).catch((e) => console.error('推理请求失败', e));
 }
 
-document.getElementById('btn-play')?.addEventListener('click', () => runInfer(40));
+document.getElementById('btn-play')?.addEventListener('click', () => runInfer());
 document.getElementById('btn-step')?.addEventListener('click', () => runInfer(1));
 
 connectWS((m) => {
   if (!m) return;
   if (m.type === 'init') {
     serverSource = m.source === 'ckpt' ? 'ckpt' : 'live';
+    setCkptAvailable(m.has_ckpt !== false);
     if (badgeSource) {
       badgeSource.textContent = serverSource === 'ckpt' ? 'checkpoint' : '实时训练';
       badgeSource.title = `服务端数据源：${serverSource}`;
@@ -384,12 +583,14 @@ connectWS((m) => {
   if (m.type === 'tick') {
     shelf?.updateValues(m.values);
     links?.update(m.values);
+    maybeAutoExpand(m.values);
     pushLoss(m.loss);
     updateTrainStats(m.step, m.loss, m.lr);
     return;
   }
   if (m.type === 'status') {
     setTraining(!!m.training);
+    if (m.training && m.target && trainTargetSel) trainTargetSel.value = m.target;
     return;
   }
   if (m.type !== 'token') return;
@@ -397,7 +598,72 @@ connectWS((m) => {
   flow?.setToken(m.values);
   links?.update(m.values);
   drawAttn(m.attn);
+  kvBars.update(m.kv, shelf, (shelf && shelf.graph && shelf.graph.model && shelf.graph.model.ctx_len) || 64);
+  topLabels.update(m.topn, outputAnchor(), m.id);
+  updateKvHud(m.kv);
+  setFooterTopN(m.topn, m.id);
+  panel.setInference({
+    text: m.text, topn: m.topn, kv: m.kv, chosenId: m.id,
+    n: panel.infer ? (panel.infer.n || 0) + 1 : 1,
+  });
 });
+
+function outputAnchor() {
+  if (!shelf || !shelf.trays) return null;
+  const finalTray = shelf.trays.get('final');
+  if (finalTray) {
+    return new THREE.Vector3(finalTray.position.x - 3.2, finalTray.position.y + 0.2, 1.0);
+  }
+  const ids = Array.from(shelf.trays.keys());
+  const last = ids.length ? shelf.trays.get(ids[ids.length - 1]) : null;
+  return last ? new THREE.Vector3(last.position.x - 3.2, last.position.y, 1.0) : null;
+}
+
+function updateKvHud(kv) {
+  const hud = document.getElementById('kvhud');
+  if (!hud) return;
+  const body = hud.querySelector('.kvhud-body');
+  const cv = hud.querySelector('canvas');
+  if (!kv || !kv.layers || !kv.layers.length) {
+    hud.classList.add('hidden');
+    if (body) body.textContent = '';
+    return;
+  }
+  hud.classList.remove('hidden');
+  const bytes = kv.total_bytes >= (1 << 20)
+    ? `${(kv.total_bytes / (1 << 20)).toFixed(2)} MB`
+    : `${(kv.total_bytes / (1 << 10)).toFixed(1)} KB`;
+  if (body) body.textContent = `KV Cache · ${kv.n_layer} 层 · ${kv.total_len} tok · ${bytes}`;
+  if (!cv) return;
+  const layers = kv.layers;
+  const ctx = cv.getContext('2d');
+  const w = cv.width;
+  const h = cv.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0a1020';
+  ctx.fillRect(0, 0, w, h);
+  const maxLen = Math.max(1, ...layers.map((L) => L.len || 0));
+  const bw = w / layers.length;
+  for (let i = 0; i < layers.length; i++) {
+    const bh = ((layers[i].len || 0) / maxLen) * (h - 4);
+    ctx.fillStyle = '#4f8cff';
+    ctx.fillRect(i * bw + 1, h - bh, Math.max(1, bw - 2), bh);
+  }
+}
+
+function setFooterTopN(topn, chosenId) {
+  const node = document.getElementById('topn');
+  if (!node) return;
+  if (!topn || !topn.length) {
+    node.textContent = '';
+    return;
+  }
+  node.textContent = topn.slice(0, 5).map((t) => {
+    const tok = t.token === '\n' ? '⏎' : (t.token || '·');
+    const mark = t.id === chosenId ? '▸' : '';
+    return `${mark}${tok}:${(Number(t.prob) * 100).toFixed(0)}%`;
+  }).join('  ');
+}
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
@@ -547,6 +813,8 @@ async function enterArch() {
   modelGroup.visible = false;
   flowGroup.visible = false;
   cloudGroup.visible = false;
+  kvGroup.visible = false;
+  topGroup.visible = false;
   archGroup.visible = true;
   if (trainPanel) trainPanel.style.display = 'none';
   if (archPanel) archPanel.style.display = 'block';
@@ -561,6 +829,8 @@ function showWeightGroups() {
   modelGroup.visible = true;
   flowGroup.visible = true;
   cloudGroup.visible = true;
+  kvGroup.visible = true;
+  topGroup.visible = true;
   if (archPanel) archPanel.style.display = 'none';
 }
 
@@ -573,8 +843,8 @@ function exitArch() {
     controls.update();
     savedCamera = null;
   }
-  if (leftEl) leftEl.style.display = source === 'live' ? 'block' : 'none';
-  if (trainPanel) trainPanel.style.display = source === 'live' ? 'block' : 'none';
+  if (leftEl) leftEl.style.display = 'block';
+  if (trainPanel) trainPanel.style.display = 'block';
   if (shelf) setBadges(shelf.graph);
   viewMode = source;
 }
@@ -622,6 +892,7 @@ function lerpTrays() {
 function tick() {
   requestAnimationFrame(tick);
   controls.update();
+  applyPanInput();
   lerpTrays();
   flow?.tick();
   renderer.render(scene, camera);

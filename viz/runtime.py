@@ -61,19 +61,23 @@ class LiveTrainer:
     def __init__(self, tokenizer: CharTokenizer, device: str,
                  on_step: Callable[[int, float, float], None],
                  lr: float = 3e-3, batch_size: int = 16, block_size: int = 48,
-                 model: GPT | None = None):
+                 model: GPT | None = None, data: torch.Tensor | None = None,
+                 weight_decay: float = 0.01, grad_clip: float = 1.0):
         self.tok = tokenizer
         self.device = device
         self.on_step = on_step
         self.lr = lr
         self.batch = batch_size
         self.block = block_size
+        self.weight_decay = weight_decay
+        self.grad_clip = grad_clip
         self.model: GPT | None = model
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.step = 0
         self.loss = float("nan")
-        data = torch.tensor(tokenizer.encode(CORPUS), dtype=torch.long)
+        if data is None:
+            data = torch.tensor(tokenizer.encode(CORPUS), dtype=torch.long)
         self.data = data.to(device)
         self.optim: torch.optim.Optimizer | None = None
 
@@ -81,7 +85,8 @@ class LiveTrainer:
         if self.model is None:
             self.model = build_tiny(self.tok.vocab_size, self.device)
         if self.optim is None:
-            tcfg = TrainConfig(lr=self.lr, weight_decay=0.01, grad_clip=1.0)
+            tcfg = TrainConfig(lr=self.lr, weight_decay=self.weight_decay,
+                               grad_clip=self.grad_clip)
             self.optim = self.model.configure_optimizers(tcfg)
 
     def start(self) -> None:
@@ -106,7 +111,7 @@ class LiveTrainer:
             _, loss, _ = self.model(x, targets=y)
             self.optim.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
             self.optim.step()
             self.step += 1
             self.loss = float(loss.detach())
@@ -137,50 +142,111 @@ def attention_probs(attn, x: torch.Tensor, cos, sin, offset: int = 0):
     return torch.softmax(att, dim=-1)
 
 
+def _pool2d(mat: torch.Tensor, max_rows: int, max_cols: int) -> dict:
+    if mat.numel() == 0:
+        return {"rows": 0, "cols": 0, "values": []}
+    r, c = mat.shape
+    pr = max(1, min(r, int(max_rows)))
+    pc = max(1, min(c, int(max_cols)))
+    m = mat.float().reshape(1, 1, r, c)
+    m = F.adaptive_avg_pool2d(m, (pr, pc))[0, 0]
+    return {"rows": pr, "cols": pc,
+            "values": [[round(float(x), 4) for x in row] for row in m.tolist()]}
+
+
+def _kv_snapshot(past, max_rows: int = 12, max_cols: int = 24) -> dict:
+    """把逐层 KV cache 压成小网格，供前端热力图；同时统计长度与字节数。"""
+    layers = []
+    total_len = 0
+    total_bytes = 0
+    for i, (k, v) in enumerate(past):
+        _, H, T, hd = k.shape
+        total_len = max(total_len, int(T))
+        nbytes = int((k.numel() + v.numel()) * k.element_size())
+        total_bytes += nbytes
+        kk = k.reshape(H, T, hd).permute(1, 0, 2).reshape(T, H * hd)
+        vv = v.reshape(H, T, hd).permute(1, 0, 2).reshape(T, H * hd)
+        layers.append({
+            "layer": i, "len": int(T), "bytes": nbytes,
+            "heads": int(H), "head_dim": int(hd),
+            "k": _pool2d(kk, max_rows, max_cols),
+            "v": _pool2d(vv, max_rows, max_cols),
+        })
+    return {"layers": layers, "total_len": total_len, "total_bytes": total_bytes,
+            "n_layer": len(past)}
+
+
+def _topn(probs: torch.Tensor, tok, n: int) -> list[dict]:
+    p = probs[0]
+    k = max(1, min(int(n), int(p.numel())))
+    vals, idxs = torch.topk(p, k)
+    out = []
+    for val, idx in zip(vals.tolist(), idxs.tolist()):
+        out.append({"id": int(idx), "token": tok.decode([int(idx)]),
+                    "prob": round(float(val), 4)})
+    return out
+
+
 @torch.no_grad()
 def stream_generate(model: GPT, tok: CharTokenizer, prompt: str, on_token: Callable,
                     max_new_tokens: int = 40, temperature: float = 0.9,
-                    top_k: int = 20, attn_layer: int = 0):
-    """自回归生成，每生成一个 token 调一次 on_token(text, probs)。
+                    top_k: int = 20, top_p: float = 0.95, top_n: int = 8,
+                    attn_layer: int = 0, seed=None):
+    """自回归生成，每生成一个 token 调一次 on_token。
 
-    on_token 收到该步的注意力概率（最后 24 个位置），供前端画热力图。
+    on_token(text, token_id, attn_pack, topn, kv)：topn 为该步 topN
+    候选词（id/词/概率），kv 为逐层 KV cache 快照。
     """
+    if seed is not None:
+        try:
+            torch.manual_seed(int(seed))
+        except (TypeError, ValueError):
+            pass
     model.eval()
     ids = tok.encode(prompt) or [0]
-    idx = torch.tensor([ids], dtype=torch.long, device=next(model.parameters()).device)
+    device = next(model.parameters()).device
+    idx = torch.tensor([ids], dtype=torch.long, device=device)
     past = None
     out_text = prompt
     for _ in range(max_new_tokens):
-        T = idx.shape[1]
         offset = past[0][0].shape[-2] if past is not None else 0
         cur = idx[:, offset:] if past is not None else idx
         logits, _, new_kvs = model(cur, past_kvs=past, use_cache=True)
         past = new_kvs
-        logits = logits[:, -1, :] / max(temperature, 1e-6)
-        if top_k and top_k > 0:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = float("-inf")
+        logits = logits[:, -1, :] / max(float(temperature), 1e-6)
+        if top_k and int(top_k) > 0:
+            v, _ = torch.topk(logits, min(int(top_k), logits.size(-1)))
+            logits = logits.masked_fill(logits < v[:, [-1]], float("-inf"))
         probs = F.softmax(logits, dim=-1)
+        if top_p and 0.0 < float(top_p) < 1.0:
+            sorted_probs, sorted_idx = torch.sort(probs, dim=-1, descending=True)
+            cum = torch.cumsum(sorted_probs, dim=-1)
+            keep = (cum - sorted_probs) <= float(top_p)
+            keep[..., 0] = True
+            sorted_probs = sorted_probs * keep
+            probs = torch.zeros_like(probs).scatter_(-1, sorted_idx, sorted_probs)
+            probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+        topn = _topn(probs, tok, top_n)
         nxt = torch.multinomial(probs, 1)
         nxt_id = int(nxt.item())
         out_text += tok.decode([nxt_id])
 
-        # 注意力概率：用缓存里的 K 和当前 token 的 q，取这一行
         attn_pack = None
-        if past is not None and offset >= 0:
-            with torch.no_grad():
-                attn = model.blocks[attn_layer].attn
-                x_last = model.blocks[attn_layer].n1(model.embed(idx[:, -1:]))
-                hd = attn.head_dim
-                q = attn.q_proj(x_last).view(1, 1, attn.n_head, hd).transpose(1, 2)
-                q = apply_rope(q, model.cos, model.sin, offset)
-                k = past[attn_layer][0]
-                if attn.n_kv_head != attn.n_head:
-                    k = k.repeat_interleave(attn.n_head // attn.n_kv_head, dim=1)
-                a = (q @ k.transpose(-2, -1)) / math.sqrt(hd)
-                a = torch.softmax(a, dim=-1)[0].mean(dim=0)[-1]  # 平均头、最后一行
-                attn_pack = [round(float(v), 4) for v in a[-24:]]
-        on_token(out_text, nxt_id, attn_pack)
+        if past is not None:
+            attn = model.blocks[attn_layer].attn
+            x_last = model.blocks[attn_layer].n1(model.embed(idx[:, -1:]))
+            hd = attn.head_dim
+            q = attn.q_proj(x_last).view(1, 1, attn.n_head, hd).transpose(1, 2)
+            q = apply_rope(q, model.cos, model.sin, offset)
+            k = past[attn_layer][0]
+            if attn.n_kv_head != attn.n_head:
+                k = k.repeat_interleave(attn.n_head // attn.n_kv_head, dim=1)
+            a = (q @ k.transpose(-2, -1)) / math.sqrt(hd)
+            a = torch.softmax(a, dim=-1)[0].mean(dim=0)[-1]
+            attn_pack = [round(float(x), 4) for x in a[-24:]]
+
+        kv = _kv_snapshot(past) if past is not None else None
+        on_token(out_text, nxt_id, attn_pack, topn, kv)
         idx = torch.cat([idx, nxt], dim=1)
     model.train()
     return out_text

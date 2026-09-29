@@ -37,6 +37,11 @@ from viz.runtime import CharTokenizer, LiveTrainer, build_tiny, stream_generate
 from viz.stats import ActivationRecorder, WeightTracker, snapshot_matrices
 from viz.weights import MatrixStore, load_checkpoint
 
+from src.config import load_config
+from src.data import load_bin
+from src.model import GPT
+from src.tokenizer import QwenTokenizer
+
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -89,6 +94,10 @@ def _offer(q: asyncio.Queue, msg: dict) -> None:
 # ----------------------------------------------------------------------------
 # 数据源构建：实时小模型 / 真实 checkpoint
 # ----------------------------------------------------------------------------
+class CkptUnavailable(RuntimeError):
+    pass
+
+
 def build_live(*, lr: float = 3e-3, batch: int = 16, block: int = 48):
     """返回 (model, tokenizer, graph, 训练超参)。"""
     from viz.runtime import CORPUS
@@ -105,35 +114,51 @@ class State:
         self.hub = Hub()
         self.tracker = WeightTracker()
         self.recorder = ActivationRecorder()
-        self.mode = "weights" if args.ckpt else "live"
+        self.has_ckpt = bool(args.ckpt)
+        self.mode = "weights" if self.has_ckpt else "live"
         self._live = None   # (model, tok, graph)
         self._ckpt = None   # (model, tok, graph)
+        self._scratch = None  # (model, tok, graph)
         self._stores: dict[str, MatrixStore] = {}
         self.trainer: LiveTrainer | None = None
+        self._train_ctx = None  # (model, graph)
+        self.train_target = "live"
 
     def ensure_live(self):
         if self._live is None:
-            model, tok, graph, (lr, batch, block) = build_live(
+            model, tok, graph, _ = build_live(
                 lr=self.args.lr, batch=self.args.batch, block=self.args.block)
             model = model.to(self.device)
             self._live = (model, tok, graph)
             self.recorder.attach(model)
-            self.trainer = LiveTrainer(tok, self.device, on_step=self._on_step,
-                                       lr=lr, batch_size=batch, block_size=block, model=model)
         return self._live
 
     def ensure_ckpt(self):
+        if not self.has_ckpt:
+            raise CkptUnavailable(
+                "服务端未加载 checkpoint，请用 --ckpt <path> 启动后重试。")
         if self._ckpt is None:
             model, cfg = load_checkpoint(self.args.ckpt, self.args.config)
             model.to(self.device)
             graph = build_graph(model, source="ckpt")
-            from src.tokenizer import QwenTokenizer
             tok = QwenTokenizer.load(cfg.data.tokenizer_dir)
             self._ckpt = (model, tok, graph)
             self.recorder.attach(model)
         return self._ckpt
 
+    def ensure_scratch(self):
+        if self._scratch is None:
+            cfg = load_config(self.args.config)
+            model = GPT(cfg.model).to(self.device)
+            graph = build_graph(model, source="scratch")
+            tok = QwenTokenizer.load(cfg.data.tokenizer_dir)
+            self._scratch = (model, tok, graph)
+            self.recorder.attach(model)
+        return self._scratch
+
     def source(self, which: str):
+        if which == "scratch":
+            return self.ensure_scratch()
         return self.ensure_live() if which == "live" else self.ensure_ckpt()
 
     def store(self, which: str) -> MatrixStore:
@@ -148,25 +173,65 @@ class State:
         g["global_absmax"] = self.store(which).global_stats()["absmax"]
         return g
 
+    def _train_data(self, cfg):
+        arr = torch.from_numpy(load_bin(cfg.data.train_bin).astype("int64"))
+        return arr
+
+    def start_train(self, target: str = "live") -> None:
+        if target not in ("live", "ckpt", "scratch"):
+            target = "live"
+        if target == "ckpt" and not self.has_ckpt:
+            raise CkptUnavailable(
+                "服务端未加载 checkpoint，请用 --ckpt <path> 启动后重试。")
+        if self.trainer:
+            self.trainer.stop()
+        self.train_target = target
+        model, tok, graph = self.source(target)
+        lr = self.args.lr
+        wd, gc = 0.01, 1.0
+        data = None
+        if target in ("ckpt", "scratch"):
+            cfg = load_config(self.args.config)
+            lr = cfg.train.lr
+            wd = cfg.train.weight_decay
+            gc = cfg.train.grad_clip
+            data = self._train_data(cfg)
+        self.tracker.capture(model)
+        self._train_ctx = (model, graph)
+        model.train()
+        self.trainer = LiveTrainer(
+            tok, self.device, on_step=self._on_step, lr=lr,
+            batch_size=self.args.batch, block_size=self.args.block,
+            model=model, data=data, weight_decay=wd, grad_clip=gc)
+        self.trainer.start()
+
+    def stop_train(self) -> None:
+        if self.trainer:
+            self.trainer.stop()
+
     def _on_step(self, step, loss, lr):
-        model, _, graph = self.ensure_live()
+        model, graph = self._train_ctx
         vals = snapshot_matrices(model, graph["matrices"], tracker=self.tracker)
         self.hub.publish({"type": "tick", "step": step,
                           "loss": loss if math.isfinite(loss) else 0.0,
-                          "lr": lr, "values": vals})
+                          "lr": lr, "target": self.train_target, "values": vals})
         self.tracker.capture(model)
 
-    def infer(self, which, prompt, max_new_tokens):
+    def infer(self, which, prompt, max_new_tokens=40, temperature=0.9, top_k=20,
+              top_p=0.95, top_n=8, seed=None):
         model, tok, graph = self.source(which)
         self.recorder.clear()
 
-        def on_token(text, token_id, attn_pack):
+        def on_token(text, token_id, attn_pack, topn, kv):
             vals = {m["name"]: {"act": self.recorder.for_matrix(m["name"])}
                     for m in graph["matrices"]}
             self.hub.publish({"type": "token", "token": (text[-1] if text else ""),
-                              "id": token_id, "text": text, "values": vals, "attn": attn_pack})
+                              "id": token_id, "text": text, "values": vals,
+                              "attn": attn_pack, "topn": topn, "kv": kv})
 
-        stream_generate(model, tok, prompt, on_token, max_new_tokens=max_new_tokens, attn_layer=0)
+        stream_generate(model, tok, prompt, on_token, max_new_tokens=max_new_tokens,
+                        temperature=temperature, top_k=top_k, top_p=top_p,
+                        top_n=top_n, attn_layer=0, seed=seed)
 
 
 state: State | None = None
@@ -181,6 +246,11 @@ async def lifespan(_app):
 app = FastAPI(title="mini-llm-lab 3D 可视化", lifespan=lifespan)
 
 
+@app.exception_handler(CkptUnavailable)
+async def _ckpt_unavailable(_req, exc):
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 # ----------------------------------------------------------------------------
 # HTTP 端点
 # ----------------------------------------------------------------------------
@@ -191,7 +261,7 @@ async def index():
 
 @app.get("/api/model")
 async def api_model(source: str = "live"):
-    if source == "ckpt":
+    if source in ("ckpt", "scratch"):
         graph = await asyncio.to_thread(state.graph, source)
     else:
         graph = state.graph(source)
@@ -258,18 +328,19 @@ async def compare_page():
 
 
 @app.post("/api/train/start")
-async def api_train_start():
-    state.ensure_live()
-    state.tracker.capture(state._live[0])
-    state.trainer.start()
-    state.hub.publish({"type": "status", "training": True})
-    return {"ok": True}
+async def api_train_start(payload: dict | None = None):
+    target = str((payload or {}).get("target", "live"))
+    if target not in ("live", "ckpt", "scratch"):
+        target = "live"
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, state.start_train, target)
+    state.hub.publish({"type": "status", "training": True, "target": target})
+    return {"ok": True, "target": target}
 
 
 @app.post("/api/train/stop")
 async def api_train_stop():
-    if state.trainer:
-        state.trainer.stop()
+    state.stop_train()
     state.hub.publish({"type": "status", "training": False})
     return {"ok": True}
 
@@ -277,10 +348,19 @@ async def api_train_stop():
 @app.post("/api/infer")
 async def api_infer(payload: dict):
     which = str(payload.get("source", "live"))
+    seed = payload.get("seed")
+    seed = int(seed) if seed not in (None, "") else None
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, state.infer, which,
-                               str(payload.get("prompt", "人工智能")),
-                               int(payload.get("max_new_tokens", 40)))
+    await loop.run_in_executor(
+        None, state.infer, which,
+        str(payload.get("prompt", "人工智能")),
+        int(payload.get("max_new_tokens", 40)),
+        float(payload.get("temperature", 0.9)),
+        int(payload.get("top_k", 20)),
+        float(payload.get("top_p", 0.95)),
+        int(payload.get("top_n", 8)),
+        seed,
+    )
     return {"ok": True}
 
 
@@ -290,7 +370,8 @@ async def ws(websocket: WebSocket):
     q = state.hub.register()
     try:
         await websocket.send_json(
-            {"type": "init", "source": "ckpt" if state.mode == "weights" else "live"})
+            {"type": "init", "has_ckpt": state.has_ckpt,
+             "source": "ckpt" if state.mode == "weights" else "live"})
         while True:
             await websocket.send_json(await q.get())
     except WebSocketDisconnect:
@@ -321,7 +402,7 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7861)
     ap.add_argument("--ckpt", default="")
-    ap.add_argument("--config", default="configs/gpt_tinystories.yaml")
+    ap.add_argument("--config", default="configs/gpt_fineweb.yaml")
     ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--block", type=int, default=48)
