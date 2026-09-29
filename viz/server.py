@@ -273,7 +273,8 @@ async def ws(websocket: WebSocket):
     await websocket.accept()
     q = state.hub.register()
     try:
-        await websocket.send_json({"type": "init", **state.graph("live")})
+        await websocket.send_json(
+            {"type": "init", **state.graph("ckpt" if state.mode == "weights" else "live")})
         while True:
             await websocket.send_json(await q.get())
     except WebSocketDisconnect:
